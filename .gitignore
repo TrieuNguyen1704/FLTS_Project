@@ -1,0 +1,56 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# Backend (PHP / Laravel)
+backend/vendor/
+backend/storage/*.key
+backend/storage/app/documents/
+backend/storage/logs/*.log
+backend/storage/framework/cache/data/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/bootstrap/cache/*
+!backend/bootstrap/cache/.gitignore
+backend/.phpunit.result.cache
+
+# Frontend (Node / Vue / Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# AI Service (Python / FastAPI)
+ai-service/__pycache__/
+ai-service/*/__pycache__/
+ai-service/*/*/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+ai-service/.pytest_cache/
+ai-service/.venv/
+ai-service/venv/
+ai-service/env/
+
+# Vector Database & Volumes
+chroma_data/
+mysql_data/
+
+# IDE & OS Files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Temporary & Office locks
+~$*.xlsx
+~$*.docx
