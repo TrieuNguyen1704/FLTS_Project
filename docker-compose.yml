@@ -1,0 +1,145 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-flts}
+      MYSQL_USER: ${MYSQL_USER:-flts}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-flts_secret}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_secret}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    # API startup waits for a real MySQL connection instead of merely waiting for the container process.
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root_secret}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: ./backend
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_KEY: base64:Qk9lK2JjZW1TNVVzQ1QxQnN0Z0VBd2NvZ3p6bW5oRzM=
+      APP_URL: http://localhost:${API_PORT:-8000}
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${MYSQL_DATABASE:-flts}
+      DB_USERNAME: ${MYSQL_USER:-flts}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-flts_secret}
+      DOCUMENT_MAX_KB: ${DOCUMENT_MAX_KB:-10240}
+      # The database queue makes processing durable; the worker below consumes these jobs.
+      QUEUE_CONNECTION: database
+      AI_SERVICE_URL: http://ai:8001
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
+      FRONTEND_URL: http://localhost:${APP_PORT:-8080}
+      MAIL_MAILER: ${MAIL_MAILER:-smtp}
+      MAIL_HOST: ${MAIL_HOST:-mailpit}
+      MAIL_PORT: ${MAIL_PORT:-1025}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_ENCRYPTION: ${MAIL_ENCRYPTION:-}
+      MAIL_SCHEME: ${MAIL_SCHEME:-}
+      MAIL_FROM_ADDRESS: ${MAIL_FROM_ADDRESS:-noreply@flts.test}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-FLTS}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    volumes:
+      # Uploaded files survive API image rebuilds but remain local demo storage, not RAG input yet.
+      - document_storage:/var/www/html/storage/app/documents
+    healthcheck:
+      test: ["CMD-SHELL", "php -r \"exit(@file_get_contents('http://127.0.0.1:8000/api/health') ? 0 : 1);\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ai:
+    build: ./ai-service
+    environment:
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
+      GEMINI_GENERATION_MODEL: ${GEMINI_GENERATION_MODEL:-gemini-2.5-flash}
+      GEMINI_EMBEDDING_BATCH_SIZE: ${GEMINI_EMBEDDING_BATCH_SIZE:-40}
+      GEMINI_EMBEDDING_MAX_RETRIES: ${GEMINI_EMBEDDING_MAX_RETRIES:-15}
+      GEMINI_QUERY_MAX_RETRIES: ${GEMINI_QUERY_MAX_RETRIES:-1}
+      CHROMA_HOST: chroma
+      CHROMA_PORT: 8000
+      CHROMA_COLLECTION: ${CHROMA_COLLECTION:-flts_document_chunks}
+    ports:
+      - "${AI_PORT:-8001}:8001"
+    depends_on:
+      chroma:
+        condition: service_healthy
+    healthcheck:
+      # This is a liveness check. Gemini configuration failures are reported by processing, not hidden at container start.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  queue-worker:
+    build: ./backend
+    command: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=3", "--backoff=5", "--timeout=600"]
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+      APP_KEY: base64:Qk9lK2JjZW1TNVVzQ1QxQnN0Z0VBd2NvZ3p6bW5oRzM=
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: ${MYSQL_DATABASE:-flts}
+      DB_USERNAME: ${MYSQL_USER:-flts}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-flts_secret}
+      QUEUE_CONNECTION: database
+      AI_SERVICE_URL: http://ai:8001
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
+      GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
+      DOCUMENT_MAX_KB: ${DOCUMENT_MAX_KB:-10240}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ai:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - document_storage:/var/www/html/storage/app/documents
+
+  chroma:
+    image: chromadb/chroma:0.5.23
+    ports:
+      - "${CHROMA_PORT:-8002}:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v2/heartbeat')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:v1.22
+    ports:
+      - "${MAILPIT_PORT:-8025}:8025"
+
+  web:
+    build: ./frontend
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  mysql_data:
+  document_storage:
+  chroma_data:
