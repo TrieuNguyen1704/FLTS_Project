@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pypdf==5.0.1
+python-docx==1.1.2
+chromadb==0.5.23
+# 2.x exposes GenerateContentConfig.response_json_schema used to constrain evidence output.
+google-genai==2.28.0
+pytest==8.3.3
+python-multipart==0.0.12

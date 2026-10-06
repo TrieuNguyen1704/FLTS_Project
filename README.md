@@ -9,12 +9,14 @@
 
 ## 👥 1. Danh sách thành viên nhóm C1SE.32
 
-| STT | Họ và tên | Vai trò chính | Email liên hệ | Phụ trách chính Sprint 1 |
-|:---:|---|---|---|---|
-| 1 | **Trương Công Triều Nguyên** | Scrum Master & Dev | Shellingofficial@gmail.com | Quản lý Git, Core Document Logic, Security & Sprint Review |
-| 2 | **Trà Văn Minh Khoa** | Developer (Backend Lead) | minhkhoa131103@gmail.com | Docker Compose, Laravel 12 Skeleton, Auth API (Register/Login) |
-| 3 | **Lê Thế Khánh Hưng** | Developer (Frontend Lead) | lethekhanhhung1808@gmail.com | Vue 3 + Vite, UI Component Library, Auth & Dashboard Screens |
-| 4 | **Đặng Trung Vương** | Developer (Core Feature) | Dangtrungvuong2020@gmail.com | Course Management, Teaching Document Upload & Dropzone |
+| STT | Họ và tên | MSSV | Vai trò chính | Email liên hệ | GitHub | Số điện thoại | Phụ trách chính Sprint 1 |
+|:---:|---|:---:|---|---|---|:---:|---|
+| 1 | **Trương Công Triều Nguyên** | **25201205268** | Scrum Master & Dev | `shellingofficical@gmail.com` | [`TrieuNguyen1704`](https://github.com/TrieuNguyen1704) | **0907857735** | Quản lý Git, Core Document Logic, Security & Sprint Review |
+| 2 | **Trà Văn Minh Khoa** | **29219054767** | Developer (Backend Lead) | `minhkhoa131103@gmail.com` | [`khoaminh1311`](https://github.com/khoaminh1311) | **0702665686** | Docker Compose, Laravel 12 Skeleton, Auth API (Register/Login) |
+| 3 | **Lê Thế Khánh Hưng** | **29211143657** | Developer (Frontend Lead) | `lethekhanhhung1808@gmail.com` | [`khanhhungdev1808`](https://github.com/khanhhungdev1808) | **0855482883** | Vue 3 + Vite, UI Component Library, Auth & Dashboard Screens |
+| 4 | **Đặng Trung Vương** | **29211150834** | Developer (Core Feature) | `dangtrungvuong2020@gmail.com` | [`vit2604`](https://github.com/vit2604) | **0349474291** | Course Management, Teaching Document Upload & Dropzone |
+
+> 📌 *Chi tiết lệnh chuyển đổi danh tính Git để commit thay mặt: Xem tại [`docs/TEAM_MEMBERS.md`](docs/TEAM_MEMBERS.md)*
 
 ---
 
