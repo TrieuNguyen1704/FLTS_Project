@@ -136,7 +136,7 @@ function loginAsRole(role) {
         Hệ thống FLTS
       </h2>
       <p class="mt-2 text-center text-sm text-slate-600">
-        Nền tảng Hỗ trợ Giảng dạy Ngoại ngữ Thông minh
+        Flipped Learning Teaching System
       </p>
     </div>
 

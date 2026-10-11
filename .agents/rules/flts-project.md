@@ -1,7 +1,7 @@
 # FLTS Project — Quy tắc AI Agent
 
 ## Thông tin dự án
-- **Dự án:** FLTS (Foreign Language Teaching Support System) — Capstone Project 1 (CMU-SE 450)
+- **Dự án:** FLTS (Flipped Learning Teaching System) — Capstone Project 1 (CMU-SE 450)
 - **Nhóm:** C1SE.32 — Đại học Duy Tân
 - **Stack:** Vue 3 + Vite + Pinia + Vue Router + Tailwind CSS (Frontend) / Laravel 12 + PHP 8.4 + Sanctum + MySQL (Backend)
 

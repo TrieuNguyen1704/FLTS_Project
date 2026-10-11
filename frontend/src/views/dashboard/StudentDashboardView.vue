@@ -39,7 +39,7 @@ const recommendedQuizzes = [
             Chào mừng trở lại, {{ user?.name || 'Bạn' }}!
           </h1>
           <p class="mt-2 text-emerald-100 text-sm max-w-xl">
-            Tiếp tục lộ trình rèn luyện ngoại ngữ hôm nay cùng trợ lý câu hỏi và tài liệu thông minh FLTS.
+            Tiếp tục lộ trình học tập hôm nay cùng trợ lý tài liệu và câu hỏi thông minh FLTS.
           </p>
         </div>
 
