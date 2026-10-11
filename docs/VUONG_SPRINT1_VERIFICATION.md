@@ -41,3 +41,11 @@ PR/review và Approve của thành viên nhóm chưa hoàn tất; không gọi t
 - Dữ liệu giả giữ lại ở database riêng: khóa ID 1 và tài liệu ID 1. Không gọi AI xử lý file này.
 - Frontend main hiện chưa có Login của Hưng. Chưa xác minh tương tác browser đăng nhập/upload end-to-end trên UI chính; component tests và API smoke không thay thế lần kiểm tra sau khi ghép nhánh Hưng. Không lấy giao diện Auth từ repo FLTS cũ để làm giả việc tích hợp.
 - Kiểm tra main remote vẫn tại `cfb92e960fb6281968c43b54f698cfbad5a9cedb` trước khi push nhánh tính năng. Local hook chặn push main/master hoặc repo khác.
+
+## Trạng thái GitHub
+
+Implementation commit local: `75ab5ce`, branch `feature/sprint1-vuong-courses-documents` tại `C:\Users\Dang Trung Vuong\FLTS_Project`.
+
+Push nhánh cá nhân bị GitHub từ chối HTTP 403: `Permission to TrieuNguyen1704/FLTS_Project.git denied to vit2604`. Code chưa lên remote; chưa có PR. Chủ repo cần mời/cấp quyền Write cho tài khoản `vit2604` và người dùng chấp nhận lời mời. Không đổi credential sang tài khoản người khác, không fork hoặc push nhầm repo để né lỗi này.
+
+Sau khi được cấp quyền, chỉ chạy `git push -u origin feature/sprint1-vuong-courses-documents`. Main remote vẫn giữ nguyên `cfb92e9` sau lần thử push bị từ chối.
