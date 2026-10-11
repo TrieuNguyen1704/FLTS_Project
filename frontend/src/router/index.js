@@ -5,6 +5,11 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/lecturer/courses',
+      name: 'course-workspace',
+      component: () => import('../views/CourseWorkspaceView.vue'),
+    },
+    {
       path: '/',
       name: 'home',
       component: HomeView
