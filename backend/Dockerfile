@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libzip-dev libi
     && docker-php-ext-install pdo_mysql pdo_sqlite mbstring xml intl zip \
     && rm -rf /var/lib/apt/lists/*
 # Keep PHP's transport limit aligned with API validation while allowing multipart form overhead.
-RUN { echo 'upload_max_filesize=10M'; echo 'post_max_size=11M'; } > /usr/local/etc/php/conf.d/uploads.ini
+RUN { echo 'upload_max_filesize=20M'; echo 'post_max_size=21M'; } > /usr/local/etc/php/conf.d/uploads.ini
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /var/www/html
 COPY --from=dependencies /app/vendor ./vendor

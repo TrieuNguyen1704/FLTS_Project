@@ -6,6 +6,11 @@ const router = createRouter({
   routes: [
     // Trang chủ — redirect theo trạng thái đăng nhập
     {
+      path: '/lecturer/courses',
+      name: 'course-workspace',
+      component: () => import('../views/CourseWorkspaceView.vue'),
+    },
+    {
       path: '/',
       name: 'home',
       redirect: () => {

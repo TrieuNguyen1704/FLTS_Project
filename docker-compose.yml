@@ -30,7 +30,7 @@ services:
       DB_DATABASE: ${MYSQL_DATABASE:-flts}
       DB_USERNAME: ${MYSQL_USER:-flts}
       DB_PASSWORD: ${MYSQL_PASSWORD:-flts_secret}
-      DOCUMENT_MAX_KB: ${DOCUMENT_MAX_KB:-10240}
+      DOCUMENT_MAX_KB: ${DOCUMENT_MAX_KB:-20480}
       # The database queue makes processing durable; the worker below consumes these jobs.
       QUEUE_CONNECTION: database
       AI_SERVICE_URL: http://ai:8001
@@ -104,7 +104,7 @@ services:
       AI_SERVICE_URL: http://ai:8001
       AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
       GEMINI_EMBEDDING_MODEL: ${GEMINI_EMBEDDING_MODEL:-gemini-embedding-2}
-      DOCUMENT_MAX_KB: ${DOCUMENT_MAX_KB:-10240}
+      DOCUMENT_MAX_KB: ${DOCUMENT_MAX_KB:-20480}
     depends_on:
       mysql:
         condition: service_healthy

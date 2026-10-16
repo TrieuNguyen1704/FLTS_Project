@@ -16,6 +16,7 @@ backend/storage/framework/views/*
 backend/bootstrap/cache/*
 !backend/bootstrap/cache/.gitignore
 backend/.phpunit.result.cache
+backend/storage/framework/testing/
 
 # Frontend (Node / Vue / Vite)
 frontend/node_modules/
