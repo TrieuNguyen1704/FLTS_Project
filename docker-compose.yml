@@ -89,7 +89,7 @@ services:
 
   queue-worker:
     build: ./backend
-    command: ["php", "artisan", "queue:work", "database", "--sleep=1", "--tries=3", "--backoff=5", "--timeout=600"]
+    command: ["php", "artisan", "queue:work", "database", "--queue=documents,default", "--sleep=1", "--tries=3", "--backoff=5", "--timeout=600"]
     environment:
       APP_ENV: local
       APP_DEBUG: "true"
