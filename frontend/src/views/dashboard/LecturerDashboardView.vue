@@ -1,12 +1,18 @@
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import AppModal from '@/components/AppModal.vue'
 import { useAuthStore } from '@/stores/auth'
 
+const router = useRouter()
 const authStore = useAuthStore()
 const user = computed(() => authStore.user)
+
+function navigateToCourse(courseId) {
+  router.push({ name: 'course-workspace', query: { id: courseId } })
+}
 
 // State Modal Tạo Khóa Học Mới
 const showCreateCourseModal = ref(false)
@@ -134,6 +140,7 @@ function handleCreateCourse() {
               <button
                 type="button"
                 class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-white hover:border-indigo-400 hover:text-indigo-600 transition-colors shrink-0"
+                @click="navigateToCourse(course.id)"
               >
                 Chi tiết
               </button>
