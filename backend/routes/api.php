@@ -4,6 +4,7 @@ use App\Http\Controllers\AdminUserController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CourseController;
 use App\Http\Controllers\DocumentController;
+use App\Http\Controllers\DocumentProcessingController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => response()->json(['status' => 'ok', 'service' => 'laravel-api']));
@@ -38,5 +39,20 @@ Route::middleware('auth.token')->group(function () {
         Route::post('/courses/{course}/documents', [DocumentController::class, 'store']);
         Route::get('/courses/{course}/documents/{document}/download', [DocumentController::class, 'download']);
         Route::delete('/courses/{course}/documents/{document}', [DocumentController::class, 'destroy']);
+
+        // Sprint 2: RAG & Document Processing
+        // FLTS canonical endpoints
+        Route::post('/courses/{course}/documents/{document}/processing-runs', [DocumentProcessingController::class, 'start']);
+        Route::post('/courses/{course}/documents/{document}/processing-runs/retry', [DocumentProcessingController::class, 'retry']);
+        Route::get('/courses/{course}/documents/{document}/processing', [DocumentProcessingController::class, 'show']);
+        Route::post('/courses/{course}/retrieval-tests', [DocumentProcessingController::class, 'search']);
+        Route::post('/courses/{course}/evidence-prototypes', [DocumentProcessingController::class, 'generateEvidence']);
+
+        // Frontend aliases and fallbacks
+        Route::post('/courses/{course}/documents/{document}/process', [DocumentProcessingController::class, 'start']);
+        Route::post('/courses/{course}/documents/{document}/retry', [DocumentProcessingController::class, 'retry']);
+        Route::post('/documents/{document}/process', [DocumentProcessingController::class, 'startDirect']);
+        Route::post('/documents/{document}/retry', [DocumentProcessingController::class, 'retryDirect']);
+        Route::post('/courses/{course}/rag/query', [DocumentProcessingController::class, 'search']);
     });
 });
