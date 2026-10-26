@@ -9,6 +9,13 @@ const router = createRouter({
       path: '/lecturer/courses',
       name: 'course-workspace',
       component: () => import('../views/CourseWorkspaceView.vue'),
+      meta: { requiresAuth: true, role: 'lecturer' },
+    },
+    {
+      path: '/courses/:id',
+      name: 'course-detail',
+      component: () => import('../views/CourseWorkspaceView.vue'),
+      meta: { requiresAuth: true, role: 'lecturer' },
     },
     {
       path: '/',

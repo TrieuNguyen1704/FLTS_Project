@@ -29,14 +29,14 @@ const menuItems = computed(() => {
       },
       {
         name: 'Quản lý khóa học',
-        routeName: 'lecturer-dashboard', // Link neo tạm thời
-        hash: '#courses',
+        routeName: 'course-workspace',
+        query: { tab: 'documents' },
         icon: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253',
       },
       {
-        name: 'Tài liệu giảng dạy',
-        routeName: 'lecturer-dashboard',
-        hash: '#documents',
+        name: 'Tài liệu & RAG Workbench',
+        routeName: 'course-workspace',
+        query: { tab: 'workbench' },
         icon: 'M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z',
       },
       {
@@ -102,6 +102,20 @@ async function handleLogout() {
   await authStore.logout()
   router.push({ name: 'login' })
 }
+
+function isItemActive(item) {
+  if (item.hash) {
+    return route.name === item.routeName && route.hash === item.hash
+  }
+  if (item.query?.tab) {
+    const currentTab = route.query.tab || 'documents'
+    return route.name === item.routeName && currentTab === item.query.tab
+  }
+  if (route.name !== item.routeName) return false
+  if (route.hash) return false
+  if (route.name === 'course-workspace') return false
+  return true
+}
 </script>
 
 <template>
@@ -144,10 +158,10 @@ async function handleLogout() {
         <RouterLink
           v-for="item in menuItems"
           :key="item.name"
-          :to="{ name: item.routeName, hash: item.hash }"
+          :to="{ name: item.routeName, hash: item.hash, query: item.query }"
           :class="[
             'flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-colors',
-            route.name === item.routeName && !item.hash
+            isItemActive(item)
               ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
               : 'text-slate-300 hover:text-white hover:bg-slate-800/80',
           ]"
