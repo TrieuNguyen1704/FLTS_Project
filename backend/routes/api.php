@@ -5,6 +5,8 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CourseController;
 use App\Http\Controllers\DocumentController;
 use App\Http\Controllers\DocumentProcessingController;
+use App\Http\Controllers\QuizAttemptController;
+use App\Http\Controllers\LecturerQuizResultController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => response()->json(['status' => 'ok', 'service' => 'laravel-api']));
@@ -19,6 +21,19 @@ Route::post('/auth/password-recovery/reset', [AuthController::class, 'resetPassw
 
 // Every product route below resolves the bearer token before a controller can trust $request->user().
 Route::middleware('auth.token')->group(function () {
+    // Sprint 3 — Vuong: student attempts and owner-only lecturer reporting.
+    Route::middleware('role:student')->prefix('courses/{course}/learning-objects/{learningObject}')
+        ->where(['course' => '[0-9]+', 'learningObject' => '[0-9]+'])->group(function () {
+            Route::post('/quiz-attempts', [QuizAttemptController::class, 'start']);
+            Route::get('/quiz-attempts', [QuizAttemptController::class, 'history']);
+            Route::patch('/quiz-attempts/{attempt}', [QuizAttemptController::class, 'saveDraft'])->whereNumber('attempt');
+            Route::post('/quiz-attempts/{attempt}/submit', [QuizAttemptController::class, 'submit'])->whereNumber('attempt');
+        });
+    Route::middleware('role:lecturer')->prefix('courses/{course}/learning-objects/{learningObject}')
+        ->where(['course' => '[0-9]+', 'learningObject' => '[0-9]+'])->group(function () {
+            Route::get('/quiz-results', [LecturerQuizResultController::class, 'index']);
+            Route::get('/quiz-results/attempts/{attempt}', [LecturerQuizResultController::class, 'show'])->whereNumber('attempt');
+        });
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
 
