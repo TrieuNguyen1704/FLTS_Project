@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/services/api'
+import { readLoginSession } from './authSession.js'
 
 /**
  * Store xác thực người dùng (HUNG-03).
@@ -32,12 +33,15 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = null
     try {
       const response = await api.post('/auth/login', { email, password })
-      const { user: userData, bearer_token } = response.data
+      const session = readLoginSession(response.data)
+      // Response sai contract → đi vào nhánh lỗi hiện có, không lưu gì
+      if (!session) throw new Error('Invalid login response')
+      const { token: newToken, user: userData } = session
 
       // Lưu token và thông tin người dùng vào localStorage
-      token.value = bearer_token
+      token.value = newToken
       user.value = userData
-      localStorage.setItem('flts_token', bearer_token)
+      localStorage.setItem('flts_token', newToken)
       localStorage.setItem('flts_user', JSON.stringify(userData))
 
       return { success: true, user: userData }
