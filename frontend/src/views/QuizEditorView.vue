@@ -208,6 +208,14 @@ onBeforeRouteLeave(() => {
             ← Quay lại khóa học
           </RouterLink>
           <h1 class="text-2xl font-bold text-slate-900 tracking-tight mt-1">Chỉnh sửa Quiz</h1>
+          <RouterLink
+            v-if="learningObject && ['published', 'archived'].includes(learningObject.status)"
+            :to="{ name: 'lecturer-quiz-results', params: { courseId, learningObjectId } }"
+            data-test="results-link"
+            class="text-xs font-medium text-indigo-600 hover:underline"
+          >
+            Xem kết quả →
+          </RouterLink>
         </div>
         <span v-if="learningObject" data-test="editor-badge" class="self-start px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700">
           {{ badge.label }}

@@ -29,6 +29,8 @@ const error = ref('')
 let token = 0
 
 const quizzes = computed(() => items.value.filter((item) => item.type === 'quiz'))
+// Chỉ quiz đã xuất bản (hoặc đã lưu trữ sau khi xuất bản) mới có bài làm của sinh viên.
+const hasResults = (quiz) => quiz.status === 'published' || quiz.status === 'archived'
 
 async function load() {
   const current = ++token
@@ -89,6 +91,14 @@ watch(() => [props.courseId, props.refreshKey], load, { immediate: true })
           >
             {{ quizStatusBadge(quiz).label }}
           </span>
+          <RouterLink
+            v-if="hasResults(quiz)"
+            :data-test="`quiz-results-${quiz.id}`"
+            :to="{ name: 'lecturer-quiz-results', params: { courseId: String(courseId), learningObjectId: String(quiz.id) } }"
+            class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Kết quả
+          </RouterLink>
           <RouterLink
             :data-test="`quiz-edit-${quiz.id}`"
             :to="{ name: 'lecturer-quiz-edit', params: { courseId: String(courseId), learningObjectId: String(quiz.id) } }"

@@ -184,6 +184,19 @@ export const learningObjects = {
 
   archive: (courseId, learningObjectId) =>
     sendEditor(() => api.post(`${objectPath(courseId, learningObjectId)}/archive`, undefined, { timeout: 20000 })),
+
+  // --- Kết quả Quiz cho Giảng viên (FAST-06), chỉ đọc. Khác quizResults/attemptResult ở timeout và thông báo lỗi. ---
+
+  // { quiz, summary, students: [{ student, attempts_count, latest_score, best_score, last_submitted_at, attempts[] }] };
+  // chỉ gồm attempt completed, không phân trang.
+  lecturerQuizResults: (courseId, learningObjectId) =>
+    sendResults(() => api.get(`${objectPath(courseId, learningObjectId)}/quiz-results`, { timeout: 20000 })),
+
+  // { attempt: {..., student}, questions: [{ question_text, selected_option_id, correct_option_id, is_correct, explanation, citations, options[] }] }
+  lecturerAttemptDetail: (courseId, learningObjectId, attemptId) =>
+    sendResults(() =>
+      api.get(`${objectPath(courseId, learningObjectId)}/quiz-results/attempts/${routeId(attemptId, 'attemptId')}`, { timeout: 20000 }),
+    ),
 }
 
 // Thông báo cho luồng tạo Quiz: khác DEFAULT_MESSAGES (viết cho bài làm của sinh viên) và có thêm 429/503/timeout.
@@ -240,3 +253,10 @@ async function sendMapped(request, statusMessages) {
 
 const sendGenerator = (request) => sendMapped(request, GENERATOR_MESSAGES)
 const sendEditor = (request) => sendMapped(request, EDITOR_MESSAGES)
+
+const RESULTS_MESSAGES = {
+  ...GENERATOR_MESSAGES,
+  403: 'Bạn không có quyền xem kết quả quiz này.',
+  404: 'Không tìm thấy quiz hoặc bài làm.',
+}
+const sendResults = (request) => sendMapped(request, RESULTS_MESSAGES)

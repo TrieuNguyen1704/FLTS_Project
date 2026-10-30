@@ -24,6 +24,13 @@ const router = createRouter({
       component: () => import('@/views/QuizEditorView.vue'),
       meta: { requiresAuth: true, role: 'lecturer' },
     },
+    // Sprint 3: kết quả Quiz cho Giảng viên, chỉ đọc (FAST-06)
+    {
+      path: '/lecturer/courses/:courseId/quizzes/:learningObjectId/results',
+      name: 'lecturer-quiz-results',
+      component: () => import('@/views/LecturerQuizResultsView.vue'),
+      meta: { requiresAuth: true, role: 'lecturer' },
+    },
     {
       path: '/',
       name: 'home',
