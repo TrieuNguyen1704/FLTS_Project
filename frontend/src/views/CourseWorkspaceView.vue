@@ -1,12 +1,15 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import FileDropzone from '@/components/FileDropzone.vue'
 import AppModal from '@/components/AppModal.vue'
+import QuizGeneratorModal from '@/views/QuizGeneratorModal.vue'
+import CourseQuizList from '@/components/CourseQuizList.vue'
 import { courseDocuments } from '@/services/courseDocuments'
 import { useAuthStore } from '@/stores/auth'
+import { isDemoSession } from '@/services/devMode'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,10 +34,29 @@ const uploadProgress = ref(0)
 const dropzoneKey = ref(0)
 const errorMessage = ref('')
 const successMessage = ref('')
+// BL-06: lỗi tải khóa học/tài liệu thật (không thay bằng dữ liệu mẫu, trừ phiên DEV Mode)
+const loadError = ref('')
 
 // State xóa tài liệu
 const documentToDelete = ref(null)
 const deletingDocument = ref(false)
+
+// Sprint 3: modal tạo Quiz bằng AI (tự tải danh sách tài liệu thật, không dùng dữ liệu mẫu)
+const showQuizGenerator = ref(false)
+const quizListKey = ref(0)
+
+function handleQuizCreated(learningObjectId) {
+  successMessage.value = `Đã tạo Quiz nháp #${learningObjectId}. Mở "Chỉnh sửa" trong mục Quiz của khóa học để xuất bản.`
+  quizListKey.value++
+}
+
+function openQuizEditor(learningObjectId) {
+  showQuizGenerator.value = false
+  router.push({
+    name: 'lecturer-quiz-edit',
+    params: { courseId: String(selectedCourse.value.id), learningObjectId: String(learningObjectId) },
+  })
+}
 
 // State tab giao diện: 'documents' (Tài liệu) hoặc 'workbench' (RAG Workbench)
 const activeTab = ref('documents')
@@ -48,6 +70,77 @@ const isRagLoading = ref(false)
 const ragAnswer = ref(null)
 const ragSources = ref([])
 const ragError = ref('')
+// Câu trả lời mô phỏng chỉ có trong phiên DEV Mode; gắn nhãn "Dữ liệu minh họa".
+const ragIsDemo = ref(false)
+
+// --- FAST-07A2: thông báo lỗi tiếng Việt theo status (backend trả câu tiếng Anh) ---
+const API_ERROR_MESSAGES = {
+  403: 'Bạn không có quyền thao tác trên khóa học này.',
+  404: 'Không tìm thấy tài liệu hoặc khóa học.',
+  429: 'Dịch vụ AI đang bận. Vui lòng thử lại sau ít phút.',
+  503: 'Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau.',
+}
+function apiErrorMessage(err, overrides = {}) {
+  const status = err?.status
+  if (!status) return 'Không thể kết nối tới máy chủ. Vui lòng kiểm tra mạng và thử lại.'
+  return overrides[status] || API_ERROR_MESSAGES[status] || (status >= 500 ? 'Máy chủ đang gặp sự cố. Vui lòng thử lại sau.' : `Yêu cầu thất bại (${status}).`)
+}
+
+// Theo dõi xử lý tài liệu bằng GET .../processing: 4 giây/lần, tối đa 10 phút (worker documents có timeout 600 giây).
+const PROCESSING_POLL_MS = 4000
+const PROCESSING_POLL_LIMIT = 150
+const processingTimers = new Map()
+
+function stopProcessingWatch(docId) {
+  clearTimeout(processingTimers.get(docId))
+  processingTimers.delete(docId)
+}
+
+function stopAllProcessingWatches() {
+  for (const docId of [...processingTimers.keys()]) stopProcessingWatch(docId)
+}
+
+function watchProcessing(doc, courseId, attempt = 0, failures = 0) {
+  stopProcessingWatch(doc.id)
+  if (attempt >= PROCESSING_POLL_LIMIT) {
+    processingDocIds.value.delete(doc.id)
+    successMessage.value = `"${doc.original_name}" vẫn đang được xử lý ở nền. Bấm "Làm mới" để cập nhật sau.`
+    return
+  }
+  processingTimers.set(doc.id, setTimeout(async () => {
+    try {
+      const data = await courseDocuments.processingStatus(courseId, doc.id)
+      if (!processingTimers.has(doc.id)) return
+      const status = data?.document?.processing_status
+      if (status) {
+        doc.processing_status = status
+        doc.status = status
+      }
+      if (status === 'processed') {
+        stopProcessingWatch(doc.id)
+        processingDocIds.value.delete(doc.id)
+        doc.error_message = null
+        successMessage.value = `Tài liệu "${doc.original_name}" đã được AI xử lý xong.`
+      } else if (status === 'failed') {
+        stopProcessingWatch(doc.id)
+        processingDocIds.value.delete(doc.id)
+        doc.error_message = data?.run?.error_detail?.message || data?.document?.processing_error || 'Xử lý tài liệu thất bại.'
+        errorMessage.value = `Xử lý "${doc.original_name}" thất bại. Có thể bấm "Thử lại".`
+      } else {
+        watchProcessing(doc, courseId, attempt + 1, 0)
+      }
+    } catch (err) {
+      if (!processingTimers.has(doc.id)) return
+      if (failures + 1 >= 3) {
+        stopProcessingWatch(doc.id)
+        processingDocIds.value.delete(doc.id)
+        errorMessage.value = `Không theo dõi được tiến độ "${doc.original_name}": ${apiErrorMessage(err)}`
+      } else {
+        watchProcessing(doc, courseId, attempt + 1, failures + 1)
+      }
+    }
+  }, PROCESSING_POLL_MS))
+}
 
 // Gợi ý câu hỏi mẫu cho Giảng viên thử nghiệm nhanh
 const samplePrompts = [
@@ -115,6 +208,7 @@ function getDocStatus(doc) {
 async function loadCourses(page = 1) {
   loading.value = true
   errorMessage.value = ''
+  loadError.value = ''
   try {
     const data = await courseDocuments.listCourses(page)
     courses.value = data.courses || []
@@ -130,8 +224,9 @@ async function loadCourses(page = 1) {
       await openCourse(courses.value[0])
     }
   } catch {
-    // Khi backend chưa chạy (proxy 500 hoặc mất kết nối), tự động dùng dữ liệu mẫu mà không báo lỗi
-    fallbackMockCourses()
+    // BL-06: dữ liệu mẫu chỉ dành cho phiên DEV Mode; phiên thật hiện lỗi kèm nút thử lại.
+    if (isDemoSession()) fallbackMockCourses()
+    else loadError.value = 'Không tải được danh sách khóa học. Vui lòng thử lại.'
   } finally {
     loading.value = false
   }
@@ -145,14 +240,16 @@ async function openCourseById(courseId) {
     selectedCourse.value = res.course
     await loadDocuments()
   } catch {
-    // Tự động dùng dữ liệu mẫu
-    fallbackMockCourses(courseId)
+    if (isDemoSession()) fallbackMockCourses(courseId)
+    else loadError.value = 'Không tải được khóa học. Vui lòng thử lại.'
   } finally {
     loading.value = false
   }
 }
 
 async function openCourse(course) {
+  stopAllProcessingWatches()
+  processingDocIds.value.clear()
   errorMessage.value = ''
   successMessage.value = ''
   selectedCourse.value = course
@@ -162,18 +259,25 @@ async function openCourse(course) {
 
 async function loadDocuments(page = 1) {
   if (!selectedCourse.value) return
+  loadError.value = ''
   try {
     const data = await courseDocuments.listDocuments(selectedCourse.value.id, page)
+    // Course chưa có tài liệu: giữ danh sách rỗng để hiện trạng thái rỗng thật (BL-06).
     documents.value = data.documents || []
     documentMeta.value = data.meta || { current_page: 1, last_page: 1 }
-
-    // Nếu không có tài liệu từ backend, cung cấp dữ liệu mẫu phong phú để kiểm thử Sprint 2
-    if (!documents.value.length) {
-      documents.value = getMockDocuments(selectedCourse.value.id)
-    }
   } catch {
-    documents.value = getMockDocuments(selectedCourse.value.id)
+    if (isDemoSession()) {
+      documents.value = getMockDocuments(selectedCourse.value.id)
+    } else {
+      documents.value = []
+      loadError.value = 'Không tải được danh sách tài liệu. Vui lòng thử lại.'
+    }
   }
+}
+
+function retryLoad() {
+  if (selectedCourse.value) loadDocuments()
+  else loadCourses()
 }
 
 async function handleCreateCourse() {
@@ -221,19 +325,30 @@ async function handleUpload(file) {
 
 // Xóa tài liệu
 async function confirmDeleteDocument() {
-  if (!documentToDelete.value || !selectedCourse.value) return
+  // deletingDocument chặn double-click: chỉ một DELETE cho mỗi lần xác nhận.
+  if (!documentToDelete.value || !selectedCourse.value || deletingDocument.value) return
+  const target = documentToDelete.value
   deletingDocument.value = true
+  errorMessage.value = ''
+  successMessage.value = ''
   try {
-    await courseDocuments.deleteDocument(selectedCourse.value.id, documentToDelete.value.id)
-    documents.value = documents.value.filter((d) => d.id !== documentToDelete.value.id)
+    await courseDocuments.deleteDocument(selectedCourse.value.id, target.id)
+    documents.value = documents.value.filter((d) => d.id !== target.id)
     successMessage.value = 'Đã xóa tài liệu thành công.'
-    documentToDelete.value = null
   } catch (err) {
-    // Nếu API lỗi (hoặc chưa cài đặt), xóa trên local để phục vụ demo giao diện
-    documents.value = documents.value.filter((d) => d.id !== documentToDelete.value.id)
-    successMessage.value = 'Đã xóa tài liệu.'
-    documentToDelete.value = null
+    if (isDemoSession()) {
+      // Phiên DEV Mode không có backend thật: giữ mô phỏng xóa trên giao diện.
+      documents.value = documents.value.filter((d) => d.id !== target.id)
+      successMessage.value = 'Đã xóa tài liệu.'
+    } else {
+      // Lỗi thật: giữ nguyên dòng tài liệu và báo lỗi.
+      errorMessage.value = apiErrorMessage(err, {
+        409: 'Tài liệu đang được xử lý nên chưa thể xóa. Vui lòng thử lại sau.',
+        503: 'Chưa xóa được vì dịch vụ dọn dữ liệu vector đang tạm ngưng. Vui lòng thử lại sau.',
+      })
+    }
   } finally {
+    documentToDelete.value = null
     deletingDocument.value = false
   }
 }
@@ -250,14 +365,20 @@ function handleDownload(doc) {
 async function handleStartAiProcessing(doc) {
   if (!selectedCourse.value || processingDocIds.value.has(doc.id)) return
   processingDocIds.value.add(doc.id)
-  doc.processing_status = 'processing'
-  doc.status = 'processing'
   errorMessage.value = ''
+  const courseId = selectedCourse.value.id
 
   try {
-    await courseDocuments.startProcessing(selectedCourse.value.id, doc.id)
-  } catch {
-    // Simulated real-time processing flow cho Sprint 2 demo
+    await courseDocuments.startProcessing(courseId, doc.id)
+  } catch (err) {
+    if (!isDemoSession()) {
+      processingDocIds.value.delete(doc.id)
+      errorMessage.value = apiErrorMessage(err, { 422: 'Tài liệu đang được xử lý hoặc không ở trạng thái có thể xử lý.' })
+      return
+    }
+    // Phiên DEV Mode: giữ luồng mô phỏng của Sprint 2
+    doc.processing_status = 'processing'
+    doc.status = 'processing'
     setTimeout(() => {
       doc.processing_status = 'processed'
       doc.status = 'processed'
@@ -269,25 +390,31 @@ async function handleStartAiProcessing(doc) {
     return
   }
 
-  // Polling hoặc cập nhật sau khi gọi API thành công
-  setTimeout(async () => {
-    processingDocIds.value.delete(doc.id)
-    await loadDocuments()
-  }, 3000)
+  // Backend đã nhận (202): theo dõi trạng thái thật thay vì tự báo thành công.
+  doc.processing_status = 'processing'
+  doc.status = 'processing'
+  successMessage.value = `Đã đưa "${doc.original_name}" vào hàng đợi xử lý AI.`
+  watchProcessing(doc, courseId)
 }
 
 async function handleRetryProcessing(doc) {
   if (!selectedCourse.value || processingDocIds.value.has(doc.id)) return
   processingDocIds.value.add(doc.id)
-  doc.processing_status = 'processing'
-  doc.status = 'processing'
-  doc.error_message = null
   errorMessage.value = ''
+  const courseId = selectedCourse.value.id
 
   try {
-    await courseDocuments.retryProcessing(selectedCourse.value.id, doc.id)
-  } catch {
-    // Simulated retry flow: phục hồi thành processed sau 2.5s
+    await courseDocuments.retryProcessing(courseId, doc.id)
+  } catch (err) {
+    if (!isDemoSession()) {
+      processingDocIds.value.delete(doc.id)
+      errorMessage.value = apiErrorMessage(err, { 422: 'Chỉ thử lại được tài liệu đang ở trạng thái lỗi.' })
+      return
+    }
+    // Phiên DEV Mode: mô phỏng phục hồi thành processed sau 2.5s
+    doc.processing_status = 'processing'
+    doc.status = 'processing'
+    doc.error_message = null
     setTimeout(() => {
       doc.processing_status = 'processed'
       doc.status = 'processed'
@@ -298,10 +425,11 @@ async function handleRetryProcessing(doc) {
     return
   }
 
-  setTimeout(async () => {
-    processingDocIds.value.delete(doc.id)
-    await loadDocuments()
-  }, 2500)
+  doc.processing_status = 'processing'
+  doc.status = 'processing'
+  doc.error_message = null
+  successMessage.value = `Đã đưa "${doc.original_name}" vào hàng đợi xử lý lại.`
+  watchProcessing(doc, courseId)
 }
 
 // --- Sprint 2: RAG Workbench ---
@@ -311,28 +439,58 @@ function applySamplePrompt(prompt) {
   handleRagSubmit()
 }
 
+// Response evidence-prototypes → khung hiển thị hiện có (document_name, section, passage, similarity_score).
+// citations chỉ có vector_id/source_locator; tên tài liệu và trích đoạn lấy từ retrieval.matches cùng vector_id.
+function mapEvidence(res) {
+  const evidence = res?.evidence ?? {}
+  const matches = new Map((res?.retrieval?.matches ?? []).map((match) => [match.vector_id, match]))
+  const limitations = evidence.limitations ? `\n\n> Giới hạn: ${evidence.limitations}` : ''
+  return {
+    answer: (evidence.answer || '') + limitations,
+    sources: (evidence.citations ?? []).map((citation, index) => {
+      const match = matches.get(citation.vector_id) ?? {}
+      return {
+        id: citation.vector_id,
+        document_name: match.document_name || 'Tài liệu',
+        page_number: null,
+        section: citation.source_locator || match.source_locator || null,
+        passage: String(match.content ?? '').slice(0, 700),
+        similarity_score: typeof match.score === 'number' ? match.score : null,
+        chunk_index: index + 1,
+      }
+    }),
+  }
+}
+
 async function handleRagSubmit() {
-  if (!ragQuestion.value.trim() || !selectedCourse.value) return
+  if (!ragQuestion.value.trim() || !selectedCourse.value || isRagLoading.value) return
   isRagLoading.value = true
   ragError.value = ''
   ragAnswer.value = null
   ragSources.value = []
+  ragIsDemo.value = false
+  const query = ragQuestion.value.trim()
 
-  try {
-    const res = await courseDocuments.ragQuery(selectedCourse.value.id, ragQuestion.value.trim())
-    ragAnswer.value = res.answer || res.response || ''
-    ragSources.value = res.sources || res.citations || []
-  } catch {
-    // Fallback thông minh: Tạo câu trả lời RAG kèm Grounded Evidence chân thực
-    const query = ragQuestion.value.trim()
+  if (isDemoSession()) {
+    // Phiên DEV Mode: câu trả lời mô phỏng, gắn nhãn "Dữ liệu minh họa".
     setTimeout(() => {
       ragAnswer.value = generateMockRagAnswer(query, selectedCourse.value)
       ragSources.value = generateMockRagSources(query, selectedCourse.value)
+      ragIsDemo.value = true
       isRagLoading.value = false
     }, 1400)
     return
+  }
+
+  try {
+    const mapped = mapEvidence(await courseDocuments.ragQuery(selectedCourse.value.id, query))
+    ragAnswer.value = mapped.answer || null
+    ragSources.value = mapped.sources
+    if (!mapped.answer) ragError.value = 'Máy chủ không trả về câu trả lời.'
+  } catch (err) {
+    ragError.value = apiErrorMessage(err, { 422: 'Không tìm thấy nội dung phù hợp trong tài liệu đã xử lý của khóa học.' })
   } finally {
-    if (ragAnswer.value) isRagLoading.value = false
+    isRagLoading.value = false
   }
 }
 
@@ -527,6 +685,8 @@ onMounted(() => {
   loadCourses()
 })
 
+onBeforeUnmount(stopAllProcessingWatches)
+
 watch(
   () => route.query.id,
   (newId) => {
@@ -623,6 +783,18 @@ function setTab(tab) {
           <span>{{ errorMessage }}</span>
         </div>
         <button type="button" class="text-red-600 hover:text-red-800 font-bold" @click="errorMessage = ''">✕</button>
+      </div>
+
+      <div
+        v-if="loadError"
+        role="alert"
+        data-test="workspace-load-error"
+        class="p-4 rounded-xl bg-red-50 border border-red-200 flex items-center justify-between gap-3 text-sm text-red-800"
+      >
+        <span>{{ loadError }}</span>
+        <button type="button" data-test="workspace-retry" class="px-3 py-1.5 rounded-lg border border-red-300 text-xs font-semibold hover:bg-red-100" @click="retryLoad">
+          Thử lại
+        </button>
       </div>
 
       <div
@@ -735,6 +907,15 @@ function setTab(tab) {
               </p>
             </div>
             <div class="flex items-center gap-2">
+              <button
+                v-if="authStore.isLecturer && selectedCourse"
+                type="button"
+                data-test="open-quiz-generator"
+                class="px-3 py-1.5 rounded-lg bg-indigo-600 text-xs font-medium text-white hover:bg-indigo-700 transition-colors"
+                @click="showQuizGenerator = true"
+              >
+                Tạo Quiz bằng AI
+              </button>
               <button
                 type="button"
                 class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-1.5"
@@ -925,6 +1106,13 @@ function setTab(tab) {
             </div>
           </div>
         </div>
+
+        <!-- Sprint 3: Quiz của khóa học (API thật, không dùng dữ liệu mẫu) -->
+        <CourseQuizList
+          v-if="authStore.isLecturer && selectedCourse"
+          :course-id="selectedCourse.id"
+          :refresh-key="quizListKey"
+        />
       </div>
 
       <!-- ================= TAB 2: RAG WORKBENCH ================= -->
@@ -1052,8 +1240,15 @@ function setTab(tab) {
           </div>
         </div>
 
+        <p v-if="ragError" data-test="rag-error" role="alert" class="p-4 rounded-xl bg-red-50 border border-red-200 text-sm text-red-800">
+          {{ ragError }}
+        </p>
+        <p v-if="ragAnswer && ragIsDemo" data-test="rag-demo-label" class="text-xs font-semibold text-amber-700">
+          Dữ liệu minh họa (DEV Mode) — không phải câu trả lời từ tài liệu thật.
+        </p>
+
         <!-- Khung Kết quả RAG (Câu trả lời + Dẫn chứng) -->
-        <div v-if="ragAnswer" class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div v-if="ragAnswer" data-test="rag-result" class="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <!-- Cột Trái: Câu trả lời từ AI (Markdown) -->
           <div class="lg:col-span-7 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm">
             <div class="flex items-center justify-between pb-4 border-b border-slate-100 mb-4">
@@ -1102,8 +1297,8 @@ function setTab(tab) {
                       {{ source.document_name }}
                     </p>
                   </div>
-                  <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-100 text-indigo-800 shrink-0">
-                    Trang {{ source.page_number || 1 }}
+                  <span v-if="source.page_number" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-100 text-indigo-800 shrink-0">
+                    Trang {{ source.page_number }}
                   </span>
                 </div>
 
@@ -1131,31 +1326,53 @@ function setTab(tab) {
       </div>
     </div>
 
+    <QuizGeneratorModal
+      v-if="selectedCourse"
+      :key="selectedCourse.id"
+      :show="showQuizGenerator"
+      :course-id="selectedCourse.id"
+      @close="showQuizGenerator = false"
+      @created="handleQuizCreated"
+      @edit="openQuizEditor"
+    />
+
     <!-- Modal xác nhận xóa tài liệu -->
     <AppModal
-      :model-value="Boolean(documentToDelete)"
+      :show="Boolean(documentToDelete)"
       title="Xác nhận xóa tài liệu"
-      confirm-label="Xóa tài liệu"
-      :danger="true"
-      :loading="deletingDocument"
-      @update:model-value="(val) => { if (!val) documentToDelete = null }"
-      @confirm="confirmDeleteDocument"
+      @close="documentToDelete = null"
     >
       <p class="text-sm text-slate-600">
         Bạn có chắc chắn muốn xóa tài liệu
         <strong class="text-slate-900">{{ documentToDelete?.original_name || documentToDelete?.file_name }}</strong>?
         Các vector đã được nhúng trong ChromaDB liên kết với tài liệu này cũng sẽ được thu hồi.
       </p>
+      <template #footer>
+        <button
+          type="button"
+          data-test="confirm-delete-document"
+          :disabled="deletingDocument"
+          class="px-4 py-2 rounded-xl bg-red-600 text-white font-semibold text-xs hover:bg-red-700 disabled:opacity-60"
+          @click="confirmDeleteDocument"
+        >
+          {{ deletingDocument ? 'Đang xóa…' : 'Xóa tài liệu' }}
+        </button>
+        <button
+          type="button"
+          :disabled="deletingDocument"
+          class="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 font-semibold text-xs hover:bg-slate-100"
+          @click="documentToDelete = null"
+        >
+          Hủy bỏ
+        </button>
+      </template>
     </AppModal>
 
     <!-- Modal tạo khóa học mới -->
     <AppModal
-      :model-value="showCreateCourseModal"
+      :show="showCreateCourseModal"
       title="Tạo khóa học mới"
-      confirm-label="Tạo khóa học"
-      :loading="creatingCourse"
-      @update:model-value="showCreateCourseModal = $event"
-      @confirm="handleCreateCourse"
+      @close="showCreateCourseModal = false"
     >
       <form class="space-y-4" @submit.prevent="handleCreateCourse">
         <div>
@@ -1191,6 +1408,25 @@ function setTab(tab) {
           />
         </div>
       </form>
+      <template #footer>
+        <button
+          type="button"
+          data-test="confirm-create-course"
+          :disabled="creatingCourse"
+          class="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold text-xs hover:bg-indigo-700 disabled:opacity-60"
+          @click="handleCreateCourse"
+        >
+          {{ creatingCourse ? 'Đang tạo…' : 'Tạo khóa học' }}
+        </button>
+        <button
+          type="button"
+          :disabled="creatingCourse"
+          class="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 font-semibold text-xs hover:bg-slate-100"
+          @click="showCreateCourseModal = false"
+        >
+          Hủy bỏ
+        </button>
+      </template>
     </AppModal>
   </DashboardLayout>
 </template>

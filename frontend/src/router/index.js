@@ -17,6 +17,20 @@ const router = createRouter({
       component: () => import('../views/CourseWorkspaceView.vue'),
       meta: { requiresAuth: true, role: 'lecturer' },
     },
+    // Sprint 3: trình chỉnh sửa Quiz của Giảng viên (FAST-05)
+    {
+      path: '/lecturer/courses/:courseId/quizzes/:learningObjectId/edit',
+      name: 'lecturer-quiz-edit',
+      component: () => import('@/views/QuizEditorView.vue'),
+      meta: { requiresAuth: true, role: 'lecturer' },
+    },
+    // Sprint 3: kết quả Quiz cho Giảng viên, chỉ đọc (FAST-06)
+    {
+      path: '/lecturer/courses/:courseId/quizzes/:learningObjectId/results',
+      name: 'lecturer-quiz-results',
+      component: () => import('@/views/LecturerQuizResultsView.vue'),
+      meta: { requiresAuth: true, role: 'lecturer' },
+    },
     {
       path: '/',
       name: 'home',
@@ -61,6 +75,26 @@ const router = createRouter({
       path: '/dashboard/student',
       name: 'student-dashboard',
       component: () => import('@/views/dashboard/StudentDashboardView.vue'),
+      meta: { requiresAuth: true, role: 'student' },
+    },
+
+    // --- Student: khóa học và Quiz (Sprint 3) ---
+    {
+      path: '/student/courses',
+      name: 'student-courses',
+      component: () => import('@/views/student/StudentCoursesView.vue'),
+      meta: { requiresAuth: true, role: 'student' },
+    },
+    {
+      path: '/student/courses/:courseId',
+      name: 'student-course',
+      component: () => import('@/views/student/StudentCourseView.vue'),
+      meta: { requiresAuth: true, role: 'student' },
+    },
+    {
+      path: '/student/courses/:courseId/quizzes/:learningObjectId',
+      name: 'student-quiz',
+      component: () => import('@/views/student/StudentQuizPlayerView.vue'),
       meta: { requiresAuth: true, role: 'student' },
     },
     {

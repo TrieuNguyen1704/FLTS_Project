@@ -1,7 +1,10 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { RouterLink } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import { useAuthStore } from '@/stores/auth'
+import { courses as coursesApi } from '@/services/courses'
+import { isDemoSession } from '@/services/devMode'
 
 const authStore = useAuthStore()
 const user = computed(() => authStore.user)
@@ -13,11 +16,30 @@ const stats = [
   { label: 'Chuỗi ngày học liên tục', value: '7 ngày', icon: 'M17.657 18.657A8 8 0 016.343 7.343S7 9 9 10c0-2 .5-5 2.986-7C14 5 16.09 5.777 17.656 7.343A7.975 7.975 0 0120 13a7.975 7.975 0 01-2.343 5.657z', color: 'bg-rose-500' },
 ]
 
-const enrolledCourses = [
-  { id: 1, code: 'ENG101', name: 'Tiếng Anh Giao Tiếp Cơ Bản', lecturer: 'ThS. Nguyễn Văn Bình', progress: 75 },
-  { id: 2, code: 'ENG202', name: 'Tiếng Anh Học Thuật & Viết Luận', lecturer: 'TS. Trần Thị Mai', progress: 40 },
-  { id: 3, code: 'IELTS-B2', name: 'Luyện thi IELTS Chuyên Sâu B2+', lecturer: 'ThS. Lê Hoàng Long', progress: 20 },
-]
+// BL-02: "Khóa học của tôi" lấy từ GET /api/courses (backend chỉ trả course sinh viên đã ghi danh).
+// Phiên DEV Mode dùng token giả nên không gọi API (401 sẽ đẩy về trang đăng nhập).
+const enrolledCourses = ref([])
+const coursesLoading = ref(false)
+const coursesError = ref('')
+const demoSession = isDemoSession()
+const COMING_SOON = 'Tính năng đang phát triển'
+
+async function loadCourses() {
+  if (demoSession) return
+  coursesLoading.value = true
+  coursesError.value = ''
+  try {
+    const data = await coursesApi.list()
+    enrolledCourses.value = Array.isArray(data?.courses) ? data.courses : []
+  } catch (err) {
+    enrolledCourses.value = []
+    coursesError.value = err.message
+  } finally {
+    coursesLoading.value = false
+  }
+}
+
+onMounted(loadCourses)
 
 const recommendedQuizzes = [
   { id: 1, title: 'Ôn tập thì Hiện Tại Hoàn Thành (Present Perfect)', course: 'ENG101', questionsCount: 15, duration: '20 phút' },
@@ -45,7 +67,10 @@ const recommendedQuizzes = [
 
         <button
           type="button"
-          class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-emerald-700 font-semibold text-sm hover:bg-emerald-50 shadow-sm transition-all"
+          data-test="continue-latest"
+          disabled
+          :title="COMING_SOON"
+          class="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-emerald-700 font-semibold text-sm shadow-sm transition-all opacity-60 cursor-not-allowed"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
@@ -55,7 +80,8 @@ const recommendedQuizzes = [
         </button>
       </div>
 
-      <!-- Stats Grid -->
+      <!-- Stats Grid (chưa có API thống kê: dữ liệu minh họa) -->
+      <p data-test="stats-illustrative" class="text-xs font-medium text-amber-700">Dữ liệu minh họa — thống kê học tập đang được phát triển.</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div
           v-for="stat in stats"
@@ -80,32 +106,33 @@ const recommendedQuizzes = [
         <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col">
           <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
             <h2 class="font-bold text-slate-900 text-base">Khóa học của tôi</h2>
-            <span class="text-xs text-indigo-600 font-semibold cursor-pointer hover:underline">Xem tất cả</span>
+            <RouterLink :to="{ name: 'student-courses' }" class="text-xs text-indigo-600 font-semibold hover:underline">Xem tất cả</RouterLink>
           </div>
           <div class="divide-y divide-slate-100 flex-1">
-            <div
-              v-for="course in enrolledCourses"
-              :key="course.id"
-              class="p-4 hover:bg-slate-50/80 transition-colors"
-            >
-              <div class="flex items-center justify-between mb-2">
-                <div class="flex items-center gap-2">
+            <p v-if="demoSession" data-test="courses-demo" class="p-4 text-sm text-slate-500">Chế độ xem trước (DEV Mode): không có dữ liệu khóa học thật.</p>
+            <p v-else-if="coursesLoading" class="p-4 text-sm text-slate-500">Đang tải khóa học…</p>
+            <p v-else-if="coursesError" data-test="courses-error" role="alert" class="p-4 text-sm text-red-700">
+              {{ coursesError }}
+              <button type="button" class="underline font-semibold ml-1" @click="loadCourses">Thử lại</button>
+            </p>
+            <p v-else-if="!enrolledCourses.length" data-test="courses-empty" class="p-4 text-sm text-slate-500">Bạn chưa tham gia khóa học nào.</p>
+            <template v-else>
+              <RouterLink
+                v-for="course in enrolledCourses"
+                :key="course.id"
+                data-test="enrolled-course"
+                :to="{ name: 'student-course', params: { courseId: String(course.id) } }"
+                class="block p-4 hover:bg-slate-50/80 transition-colors"
+              >
+                <div class="flex items-center gap-2 mb-1">
                   <span class="px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-700">
                     {{ course.code }}
                   </span>
                   <h3 class="text-sm font-semibold text-slate-800">{{ course.name }}</h3>
                 </div>
-                <span class="text-xs font-bold text-indigo-600">{{ course.progress }}%</span>
-              </div>
-              <p class="text-xs text-slate-500 mb-2">Giảng viên: {{ course.lecturer }}</p>
-              <!-- Progress Bar -->
-              <div class="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                <div
-                  class="bg-indigo-600 h-2 rounded-full transition-all duration-500"
-                  :style="{ width: `${course.progress}%` }"
-                ></div>
-              </div>
-            </div>
+                <p v-if="course.lecturer?.name" class="text-xs text-slate-500">Giảng viên: {{ course.lecturer.name }}</p>
+              </RouterLink>
+            </template>
           </div>
         </div>
 
@@ -113,7 +140,7 @@ const recommendedQuizzes = [
         <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden flex flex-col">
           <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
             <h2 class="font-bold text-slate-900 text-base">Luyện tập AI đề xuất hôm nay</h2>
-            <span class="text-xs text-slate-500">Dựa theo bài học</span>
+            <span data-test="recommended-illustrative" class="text-xs font-medium text-amber-700">Dữ liệu minh họa</span>
           </div>
           <div class="divide-y divide-slate-100 flex-1">
             <div
@@ -133,7 +160,10 @@ const recommendedQuizzes = [
               </div>
               <button
                 type="button"
-                class="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 transition-colors shrink-0"
+                data-test="recommended-start"
+                disabled
+                :title="COMING_SOON"
+                class="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold transition-colors shrink-0 opacity-60 cursor-not-allowed"
               >
                 Làm bài
               </button>

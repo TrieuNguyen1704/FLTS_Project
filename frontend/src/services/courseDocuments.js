@@ -2,7 +2,9 @@ const base = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_BA
 const token = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('flts_token') : null)
 
 function apiError(data, status) {
-  return new Error(Object.values(data.errors || {}).flat().join(' ') || data.message || `Yêu cầu thất bại (${status}).`)
+  const error = new Error(Object.values(data.errors || {}).flat().join(' ') || data.message || `Yêu cầu thất bại (${status}).`)
+  error.status = status // view chọn thông báo tiếng Việt theo status (FAST-07A2)
+  return error
 }
 
 async function request(path, options = {}) {
@@ -28,28 +30,23 @@ export const courseDocuments = {
   deleteDocument: (courseId, documentId) => request(`/courses/${courseId}/documents/${documentId}`, { method: 'DELETE' }),
   downloadUrl: (courseId, documentId) => `${base}/courses/${courseId}/documents/${documentId}/download`,
 
-  // Sprint 2: AI Processing & RAG Workbench
+  // Sprint 2: AI Processing & RAG Workbench — route thật của backend FLTS (DocumentProcessingController).
+  // 202 { run, message }; 422 khi tài liệu đang xử lý (start) hoặc không ở trạng thái failed (retry).
   startProcessing: (courseId, documentId) =>
-    request(`/courses/${courseId}/documents/${documentId}/process`, { method: 'POST' }).catch(() => {
-      // Fallback endpoint if route is at /documents/{id}/process
-      return request(`/documents/${documentId}/process`, { method: 'POST' })
-    }),
+    request(`/courses/${courseId}/documents/${documentId}/processing-runs`, { method: 'POST', body: '{}' }),
 
   retryProcessing: (courseId, documentId) =>
-    request(`/courses/${courseId}/documents/${documentId}/retry`, { method: 'POST' }).catch(() => {
-      return request(`/documents/${documentId}/retry`, { method: 'POST' })
-    }),
+    request(`/courses/${courseId}/documents/${documentId}/processing-runs/retry`, { method: 'POST', body: '{}' }),
 
+  // { document: { processing_status, ... }, run: { status, stage, error_detail, ... } | null }
+  processingStatus: (courseId, documentId) => request(`/courses/${courseId}/documents/${documentId}/processing`),
+
+  // Grounded evidence: { evidence: { answer, citations: [{ vector_id, source_locator }], limitations },
+  // retrieval: { matches: [{ vector_id, content, score, document_name, source_locator }] } }
   ragQuery: (courseId, question) =>
-    request(`/courses/${courseId}/rag/query`, {
+    request(`/courses/${courseId}/evidence-prototypes`, {
       method: 'POST',
-      body: JSON.stringify({ question }),
-    }).catch(() => {
-      // Fallback endpoint if route is at /rag/query
-      return request('/rag/query', {
-        method: 'POST',
-        body: JSON.stringify({ course_id: courseId, question }),
-      })
+      body: JSON.stringify({ prompt: question, top_k: 5 }),
     }),
 
   upload: (id, file, onProgress) => new Promise((resolve, reject) => {

@@ -2,6 +2,7 @@
 import { ref, reactive, computed } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { showDevLogin, consumeSessionExpired } from '@/services/devMode'
 
 const router = useRouter()
 const route = useRoute()
@@ -16,6 +17,8 @@ const form = reactive({
 
 const showPassword = ref(false)
 const errorMessage = ref('')
+// BL-03: bị interceptor 401 đưa về đây thì báo phiên hết hạn (chỉ một lần).
+const sessionExpired = ref(consumeSessionExpired())
 const isSubmitting = ref(false)
 
 // Validate client-side cơ bản
@@ -82,10 +85,8 @@ async function handleLogin() {
   }
 }
 
-// Chỉ hiển thị chế độ xem trước khi ở môi trường DEV hoặc truyền ?demo trên URL
-const isDev = computed(() => {
-  return import.meta.env.DEV || route.query.demo !== undefined
-})
+// BL-01: chỉ hiển thị chế độ xem trước khi VITE_SHOW_DEV_LOGIN=true (mặc định ẩn, kể cả npm run dev)
+const isDev = computed(() => showDevLogin())
 
 function loginAsRole(role) {
   const users = {
@@ -142,6 +143,16 @@ function loginAsRole(role) {
 
     <div class="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
       <div class="bg-white py-8 px-6 shadow-xl shadow-slate-200/50 sm:rounded-2xl sm:px-10 border border-slate-100">
+        <!-- BL-03: phiên hết hạn (interceptor 401) -->
+        <div
+          v-if="sessionExpired && !errorMessage"
+          data-test="session-expired"
+          class="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-800 font-medium"
+          role="status"
+        >
+          Phiên đăng nhập đã hết hạn hoặc không hợp lệ. Vui lòng đăng nhập lại.
+        </div>
+
         <!-- Thông báo lỗi tổng quát -->
         <div
           v-if="errorMessage"
@@ -277,8 +288,8 @@ function loginAsRole(role) {
           </div>
         </form>
 
-        <!-- Xem nhanh theo từng vai trò (Chỉ hiển thị ở chế độ DEV hoặc khi có ?demo) -->
-        <div v-if="isDev" class="mt-6 pt-5 border-t border-dashed border-slate-200">
+        <!-- Xem nhanh theo từng vai trò (chỉ khi VITE_SHOW_DEV_LOGIN=true) -->
+        <div v-if="isDev" data-test="dev-login" class="mt-6 pt-5 border-t border-dashed border-slate-200">
           <p class="text-xs text-center text-slate-500 font-medium mb-3">
             🧪 Chế độ xem trước Dashboard (DEV Mode):
           </p>

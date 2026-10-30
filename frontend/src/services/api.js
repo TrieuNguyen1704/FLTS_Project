@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { markSessionExpired } from './devMode.js'
 
 /**
  * Axios instance dùng chung cho toàn bộ ứng dụng.
@@ -33,6 +34,8 @@ api.interceptors.response.use(
       // Xóa token cũ và điều hướng về trang đăng nhập
       localStorage.removeItem('flts_token')
       localStorage.removeItem('flts_user')
+      // Trang login đọc cờ này để báo phiên hết hạn (BL-03); không lưu token hay thông tin lỗi.
+      markSessionExpired()
       window.location.href = '/login'
     }
     return Promise.reject(error)
