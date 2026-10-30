@@ -6,7 +6,11 @@ import { createRenderer, nextTick } from 'vue'
 let currentBody = null
 
 function createNode(fields) {
-  return { parent: null, children: [], props: {}, ...fields }
+  // listeners: chỉ directive như v-model gọi addEventListener; test tự gọi listener để mô phỏng gõ phím.
+  const node = { parent: null, children: [], props: {}, listeners: {}, ...fields }
+  node.addEventListener = (type, fn) => { (node.listeners[type] ||= []).push(fn) }
+  node.removeEventListener = (type, fn) => { node.listeners[type] = (node.listeners[type] || []).filter((f) => f !== fn) }
+  return node
 }
 
 const nodeOps = {

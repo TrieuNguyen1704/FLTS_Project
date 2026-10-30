@@ -20,6 +20,11 @@ export async function load(url, context, nextLoad) {
   if (!url.endsWith('.vue')) return nextLoad(url, context)
   const filename = fileURLToPath(url)
   const { descriptor } = parse(await readFile(filename, 'utf8'), { filename })
-  const { content } = compileScript(descriptor, { id: filename, inlineTemplate: true })
+  // hoistStatic: false — không gộp HTML tĩnh thành chuỗi (cần insertStaticContent mà renderer test không có).
+  const { content } = compileScript(descriptor, {
+    id: filename,
+    inlineTemplate: true,
+    templateOptions: { compilerOptions: { hoistStatic: false } },
+  })
   return { format: 'module', source: content, shortCircuit: true }
 }

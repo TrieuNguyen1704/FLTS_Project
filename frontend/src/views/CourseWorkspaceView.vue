@@ -9,6 +9,7 @@ import QuizGeneratorModal from '@/views/QuizGeneratorModal.vue'
 import CourseQuizList from '@/components/CourseQuizList.vue'
 import { courseDocuments } from '@/services/courseDocuments'
 import { useAuthStore } from '@/stores/auth'
+import { isDemoSession } from '@/services/devMode'
 
 const route = useRoute()
 const router = useRouter()
@@ -33,6 +34,8 @@ const uploadProgress = ref(0)
 const dropzoneKey = ref(0)
 const errorMessage = ref('')
 const successMessage = ref('')
+// BL-06: lỗi tải khóa học/tài liệu thật (không thay bằng dữ liệu mẫu, trừ phiên DEV Mode)
+const loadError = ref('')
 
 // State xóa tài liệu
 const documentToDelete = ref(null)
@@ -134,6 +137,7 @@ function getDocStatus(doc) {
 async function loadCourses(page = 1) {
   loading.value = true
   errorMessage.value = ''
+  loadError.value = ''
   try {
     const data = await courseDocuments.listCourses(page)
     courses.value = data.courses || []
@@ -149,8 +153,9 @@ async function loadCourses(page = 1) {
       await openCourse(courses.value[0])
     }
   } catch {
-    // Khi backend chưa chạy (proxy 500 hoặc mất kết nối), tự động dùng dữ liệu mẫu mà không báo lỗi
-    fallbackMockCourses()
+    // BL-06: dữ liệu mẫu chỉ dành cho phiên DEV Mode; phiên thật hiện lỗi kèm nút thử lại.
+    if (isDemoSession()) fallbackMockCourses()
+    else loadError.value = 'Không tải được danh sách khóa học. Vui lòng thử lại.'
   } finally {
     loading.value = false
   }
@@ -164,8 +169,8 @@ async function openCourseById(courseId) {
     selectedCourse.value = res.course
     await loadDocuments()
   } catch {
-    // Tự động dùng dữ liệu mẫu
-    fallbackMockCourses(courseId)
+    if (isDemoSession()) fallbackMockCourses(courseId)
+    else loadError.value = 'Không tải được khóa học. Vui lòng thử lại.'
   } finally {
     loading.value = false
   }
@@ -181,18 +186,25 @@ async function openCourse(course) {
 
 async function loadDocuments(page = 1) {
   if (!selectedCourse.value) return
+  loadError.value = ''
   try {
     const data = await courseDocuments.listDocuments(selectedCourse.value.id, page)
+    // Course chưa có tài liệu: giữ danh sách rỗng để hiện trạng thái rỗng thật (BL-06).
     documents.value = data.documents || []
     documentMeta.value = data.meta || { current_page: 1, last_page: 1 }
-
-    // Nếu không có tài liệu từ backend, cung cấp dữ liệu mẫu phong phú để kiểm thử Sprint 2
-    if (!documents.value.length) {
-      documents.value = getMockDocuments(selectedCourse.value.id)
-    }
   } catch {
-    documents.value = getMockDocuments(selectedCourse.value.id)
+    if (isDemoSession()) {
+      documents.value = getMockDocuments(selectedCourse.value.id)
+    } else {
+      documents.value = []
+      loadError.value = 'Không tải được danh sách tài liệu. Vui lòng thử lại.'
+    }
   }
+}
+
+function retryLoad() {
+  if (selectedCourse.value) loadDocuments()
+  else loadCourses()
 }
 
 async function handleCreateCourse() {
@@ -642,6 +654,18 @@ function setTab(tab) {
           <span>{{ errorMessage }}</span>
         </div>
         <button type="button" class="text-red-600 hover:text-red-800 font-bold" @click="errorMessage = ''">✕</button>
+      </div>
+
+      <div
+        v-if="loadError"
+        role="alert"
+        data-test="workspace-load-error"
+        class="p-4 rounded-xl bg-red-50 border border-red-200 flex items-center justify-between gap-3 text-sm text-red-800"
+      >
+        <span>{{ loadError }}</span>
+        <button type="button" data-test="workspace-retry" class="px-3 py-1.5 rounded-lg border border-red-300 text-xs font-semibold hover:bg-red-100" @click="retryLoad">
+          Thử lại
+        </button>
       </div>
 
       <div
@@ -1178,29 +1202,41 @@ function setTab(tab) {
 
     <!-- Modal xác nhận xóa tài liệu -->
     <AppModal
-      :model-value="Boolean(documentToDelete)"
+      :show="Boolean(documentToDelete)"
       title="Xác nhận xóa tài liệu"
-      confirm-label="Xóa tài liệu"
-      :danger="true"
-      :loading="deletingDocument"
-      @update:model-value="(val) => { if (!val) documentToDelete = null }"
-      @confirm="confirmDeleteDocument"
+      @close="documentToDelete = null"
     >
       <p class="text-sm text-slate-600">
         Bạn có chắc chắn muốn xóa tài liệu
         <strong class="text-slate-900">{{ documentToDelete?.original_name || documentToDelete?.file_name }}</strong>?
         Các vector đã được nhúng trong ChromaDB liên kết với tài liệu này cũng sẽ được thu hồi.
       </p>
+      <template #footer>
+        <button
+          type="button"
+          data-test="confirm-delete-document"
+          :disabled="deletingDocument"
+          class="px-4 py-2 rounded-xl bg-red-600 text-white font-semibold text-xs hover:bg-red-700 disabled:opacity-60"
+          @click="confirmDeleteDocument"
+        >
+          {{ deletingDocument ? 'Đang xóa…' : 'Xóa tài liệu' }}
+        </button>
+        <button
+          type="button"
+          :disabled="deletingDocument"
+          class="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 font-semibold text-xs hover:bg-slate-100"
+          @click="documentToDelete = null"
+        >
+          Hủy bỏ
+        </button>
+      </template>
     </AppModal>
 
     <!-- Modal tạo khóa học mới -->
     <AppModal
-      :model-value="showCreateCourseModal"
+      :show="showCreateCourseModal"
       title="Tạo khóa học mới"
-      confirm-label="Tạo khóa học"
-      :loading="creatingCourse"
-      @update:model-value="showCreateCourseModal = $event"
-      @confirm="handleCreateCourse"
+      @close="showCreateCourseModal = false"
     >
       <form class="space-y-4" @submit.prevent="handleCreateCourse">
         <div>
@@ -1236,6 +1272,25 @@ function setTab(tab) {
           />
         </div>
       </form>
+      <template #footer>
+        <button
+          type="button"
+          data-test="confirm-create-course"
+          :disabled="creatingCourse"
+          class="px-4 py-2 rounded-xl bg-indigo-600 text-white font-semibold text-xs hover:bg-indigo-700 disabled:opacity-60"
+          @click="handleCreateCourse"
+        >
+          {{ creatingCourse ? 'Đang tạo…' : 'Tạo khóa học' }}
+        </button>
+        <button
+          type="button"
+          :disabled="creatingCourse"
+          class="px-4 py-2 rounded-xl border border-slate-200 text-slate-700 font-semibold text-xs hover:bg-slate-100"
+          @click="showCreateCourseModal = false"
+        >
+          Hủy bỏ
+        </button>
+      </template>
     </AppModal>
   </DashboardLayout>
 </template>
