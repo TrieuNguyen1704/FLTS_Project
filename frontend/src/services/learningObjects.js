@@ -140,4 +140,68 @@ export const learningObjects = {
 
   attemptResult: (courseId, learningObjectId, attemptId) =>
     send(() => api.get(`${objectPath(courseId, learningObjectId)}/quiz-results/attempts/${routeId(attemptId, 'attemptId')}`)),
+
+  // --- Quiz Generator (Giảng viên) — contract FAST-04A. Poll tiến độ dùng show() và đọc learning_object.generation. ---
+
+  // Danh sách tài liệu thật của course (không phân trang, có processing_status). Không dùng dữ liệu mẫu như
+  // CourseWorkspaceView: document_ids giả sẽ bị backend từ chối (422).
+  sourceDocuments: (courseId) =>
+    sendGenerator(() => api.get(`/courses/${routeId(courseId, 'courseId')}/documents`)),
+
+  // payload: { topic, requested_count, top_k, document_ids?, max_pages? }; learning_object_type luôn là 'quiz'.
+  // Gọi FastAPI đồng bộ (server chờ tối đa 30 giây) nên client chờ 35 giây.
+  previewQuizSources: (courseId, payload) =>
+    sendGenerator(() =>
+      api.post(`${collectionPath(courseId)}/source-preview`, { ...payload, learning_object_type: 'quiz' }, { timeout: 35000 }),
+    ),
+
+  // payload gửi nguyên như caller truyền (topic, difficulty, question_count, passing_score, request_id...).
+  // Backend trả 202; gửi lại cùng request_id trả về đúng learning object đã tạo thay vì tạo bản mới.
+  createQuiz: (courseId, payload) => {
+    if (typeof payload?.request_id !== 'string' || !payload.request_id) {
+      throw new TypeError('payload.request_id là bắt buộc để chống tạo trùng.')
+    }
+    return sendGenerator(() => api.post(`${collectionPath(courseId)}/quizzes`, payload, { timeout: 20000 }))
+  },
+
+  // Chỉ hợp lệ khi lần tạo gần nhất failed và chưa có nội dung; server tự sinh request_id mới (202).
+  retryQuizGeneration: (courseId, learningObjectId) =>
+    sendGenerator(() =>
+      api.post(`${objectPath(courseId, learningObjectId)}/generation-runs/retry`, undefined, { timeout: 20000 }),
+    ),
+}
+
+// Thông báo cho luồng tạo Quiz: khác DEFAULT_MESSAGES (viết cho bài làm của sinh viên) và có thêm 429/503/timeout.
+const GENERATOR_MESSAGES = {
+  0: 'Không thể kết nối tới máy chủ. Vui lòng kiểm tra mạng và thử lại.',
+  403: 'Bạn không có quyền tạo Quiz trong khóa học này.',
+  404: 'Không tìm thấy khóa học hoặc học liệu.',
+  409: 'Yêu cầu tạo Quiz bị trùng với một yêu cầu khác. Vui lòng mở lại biểu mẫu.',
+  422: 'Dữ liệu gửi lên không hợp lệ.',
+  429: 'Dịch vụ AI đang bận. Vui lòng thử lại sau ít phút.',
+  503: 'Dịch vụ AI tạm thời không khả dụng. Vui lòng thử lại sau.',
+}
+const TIMEOUT_MESSAGE = 'Máy chủ phản hồi quá lâu. Vui lòng thử lại.'
+const TIMEOUT_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT'])
+
+// Backend trả các câu tiếng Anh cố định cho lỗi nghiệp vụ (LearningObjectController, SourcePreviewController).
+const KNOWN_SERVER_MESSAGES = {
+  'Every selected document must belong to this course and be processed.':
+    'Mọi tài liệu được chọn phải thuộc khóa học và đã xử lý xong.',
+  'The requested output count is invalid for this learning object type.': 'Số câu hỏi phải từ 3 đến 20.',
+  'Only a failed generation can be retried.': 'Chỉ có thể thử lại khi lần tạo gần nhất thất bại.',
+  'Source preview is temporarily unavailable.':
+    'Chưa kiểm tra được nguồn: không tìm thấy nội dung phù hợp hoặc dịch vụ đang tạm ngưng.',
+  'The source check is temporarily rate limited. Please retry shortly.': GENERATOR_MESSAGES[429],
+}
+
+async function sendGenerator(request) {
+  try {
+    return await send(request)
+  } catch (err) {
+    if (!(err instanceof LearningObjectsApiError) || err.canceled) throw err
+    if (err.status === 0 && TIMEOUT_CODES.has(err.code)) err.message = TIMEOUT_MESSAGE
+    else err.message = KNOWN_SERVER_MESSAGES[err.serverMessage] || GENERATOR_MESSAGES[err.status] || err.message
+    throw err
+  }
 }

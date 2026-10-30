@@ -5,6 +5,7 @@ import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import FileDropzone from '@/components/FileDropzone.vue'
 import AppModal from '@/components/AppModal.vue'
+import QuizGeneratorModal from '@/views/QuizGeneratorModal.vue'
 import { courseDocuments } from '@/services/courseDocuments'
 import { useAuthStore } from '@/stores/auth'
 
@@ -35,6 +36,13 @@ const successMessage = ref('')
 // State xóa tài liệu
 const documentToDelete = ref(null)
 const deletingDocument = ref(false)
+
+// Sprint 3: modal tạo Quiz bằng AI (tự tải danh sách tài liệu thật, không dùng dữ liệu mẫu)
+const showQuizGenerator = ref(false)
+
+function handleQuizCreated(learningObjectId) {
+  successMessage.value = `Đã tạo Quiz nháp #${learningObjectId}. Chỉnh sửa và xuất bản ở bước tiếp theo.`
+}
 
 // State tab giao diện: 'documents' (Tài liệu) hoặc 'workbench' (RAG Workbench)
 const activeTab = ref('documents')
@@ -736,6 +744,15 @@ function setTab(tab) {
             </div>
             <div class="flex items-center gap-2">
               <button
+                v-if="authStore.isLecturer && selectedCourse"
+                type="button"
+                data-test="open-quiz-generator"
+                class="px-3 py-1.5 rounded-lg bg-indigo-600 text-xs font-medium text-white hover:bg-indigo-700 transition-colors"
+                @click="showQuizGenerator = true"
+              >
+                Tạo Quiz bằng AI
+              </button>
+              <button
                 type="button"
                 class="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-medium text-slate-600 hover:bg-slate-50 transition-colors flex items-center gap-1.5"
                 @click="loadDocuments"
@@ -1130,6 +1147,15 @@ function setTab(tab) {
         </div>
       </div>
     </div>
+
+    <QuizGeneratorModal
+      v-if="selectedCourse"
+      :key="selectedCourse.id"
+      :show="showQuizGenerator"
+      :course-id="selectedCourse.id"
+      @close="showQuizGenerator = false"
+      @created="handleQuizCreated"
+    />
 
     <!-- Modal xác nhận xóa tài liệu -->
     <AppModal
