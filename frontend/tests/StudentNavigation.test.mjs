@@ -111,6 +111,32 @@ const quizDetail = (quiz = {}) => ({
   },
 })
 
+const quizHistory = { attempts: [{ id: 1, score: 50 }], latest_score: 50, best_score: 50 }
+// Response start theo shape FLTS; cố ý thêm field đáp án để kiểm tra view không hiển thị chúng.
+const startPayload = (draft = []) => ({
+  attempt: { id: 11, attempt_number: 2, status: 'in_progress', started_at: null, expires_at: null, draft_answers: draft },
+  quiz: {
+    learning_object_id: 7,
+    title: 'Kiểm tra 15 phút',
+    questions: [
+      {
+        id: 21,
+        question_index: 0,
+        question_text: 'Câu hỏi thứ nhất',
+        explanation: 'SECRET_EXPLANATION',
+        options: [
+          { id: 41, option_index: 0, option_text: 'Lựa chọn A' },
+          { id: 42, option_index: 1, option_text: 'Lựa chọn B', is_correct: true },
+        ],
+      },
+      { id: 22, question_index: 1, question_text: 'Câu hỏi thứ hai', options: [{ id: 43, option_index: 0, option_text: 'Lựa chọn C' }] },
+    ],
+  },
+  server_time: '2026-10-30T06:53:46.370035Z',
+})
+const PLAYER = '/api/courses/1/learning-objects/7'
+const change = (node) => node.props.onChange()
+
 beforeEach(() => {
   calls = []
   loginAs('student')
@@ -297,21 +323,20 @@ test('VIEW07: invalid course id shows an error without sending requests', async 
   assert.equal(calls.length, 0)
 })
 
-test('PLAYER01: quiz skeleton shows quiz info, a disabled start button and never starts an attempt', async () => {
-  serve({ 'GET /api/courses/1/learning-objects/7': [200, quizDetail()] })
+test('PLAYER01: quiz intro shows quiz info and history without starting an attempt', async () => {
+  serve({ [`GET ${PLAYER}`]: [200, quizDetail()], [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory] })
   const page = await open('/student/courses/1/quizzes/7')
-  assert.deepEqual(sentRequests(), ['GET /api/courses/1/learning-objects/7'])
+  assert.deepEqual(sentRequests(), [`GET ${PLAYER}`, `GET ${PLAYER}/quiz-attempts`])
   assert.match(page.text(), /Kiểm tra 15 phút/)
   assert.equal(textOf(page.find('total-questions')[0]).trim(), '8')
   assert.match(page.text(), /25 phút/)
   assert.match(page.text(), /60%/)
+  assert.match(textOf(page.find('history')[0]), /Số lượt đã hoàn thành: 1/)
+  assert.match(textOf(page.find('history')[0]), /Điểm gần nhất: 50%/)
   const start = page.find('start')[0]
-  assert.equal('disabled' in start.props, true)
-  assert.equal(start.props.onClick, undefined)
-  click(start)
+  assert.equal('disabled' in start.props, false)
   await flush()
-  assert.equal(calls.every((c) => c.method === 'get'), true)
-  assert.equal(calls.some((c) => api.getUri(c).includes('quiz-attempts')), false)
+  assert.equal(calls.some((c) => c.method !== 'get'), false)
   assert.equal(href(page.find('back')[0]), '/student/courses/1')
 })
 
@@ -325,6 +350,7 @@ test('PLAYER03: invalid ids, non-quiz objects and API errors show safe error sta
   let page = await open('/student/courses/1/quizzes/abc')
   assert.match(page.text(), /Đường dẫn Quiz không hợp lệ/)
   assert.equal(calls.length, 0)
+  assert.equal(page.find('retry').length, 0)
   page.unmount()
 
   serve({ 'GET /api/courses/1/learning-objects/8': [200, { learning_object: { id: 8, type: 'flashcard', title: 'Bộ thẻ', quiz: null } }] })
@@ -332,20 +358,123 @@ test('PLAYER03: invalid ids, non-quiz objects and API errors show safe error sta
   assert.match(page.text(), /Không tìm thấy bài kiểm tra hoặc bài làm/)
   page.unmount()
 
-  serve({ 'GET /api/courses/1/learning-objects/7': [404, { message: 'No query results for model [App\\Models\\LearningObject] 7' }] })
+  // 404 là lỗi không thể thử lại; message debug của backend không được hiển thị.
+  serve({ [`GET ${PLAYER}`]: [404, { message: 'No query results for model [App\\Models\\LearningObject] 7' }] })
   page = await open('/student/courses/1/quizzes/7')
   assert.equal(page.find('error').length, 1)
   assert.match(page.text(), /Không tìm thấy bài kiểm tra hoặc bài làm/)
   assert.doesNotMatch(page.text(), /App\\Models/)
-  assert.equal(page.find('retry').length, 1)
+  assert.equal(page.find('retry').length, 0)
+  page.unmount()
+
+  // Lỗi máy chủ cho phép thử lại thủ công; lịch sử lỗi không chặn intro.
+  serve({ [`GET ${PLAYER}`]: [500, { message: 'SQLSTATE[HY000]' }], [`GET ${PLAYER}/quiz-attempts`]: [500, {}] })
+  page = await open('/student/courses/1/quizzes/7')
+  assert.match(page.text(), /Máy chủ đang gặp sự cố/)
+  assert.doesNotMatch(page.text(), /SQLSTATE/)
+  serve({ [`GET ${PLAYER}`]: [200, quizDetail()], [`GET ${PLAYER}/quiz-attempts`]: [500, {}] })
+  await click(page.find('retry')[0])
+  await flush()
+  assert.equal(page.find('quiz-info').length, 1)
+  assert.match(textOf(page.find('history-error')[0]), /Không tải được lịch sử làm bài/)
+  assert.equal(page.find('start').length, 1)
 })
 
-test('FLOW01: sidebar → courses → quiz list → quiz skeleton uses GET requests only', async () => {
+test('PLAYER04: start runs only on click, once for a double click, and the student can answer', async () => {
+  let release
+  serve({
+    [`GET ${PLAYER}`]: [200, quizDetail()],
+    [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+    [`POST ${PLAYER}/quiz-attempts`]: () => new Promise((resolve) => { release = () => resolve([201, startPayload([{ question_id: 22, selected_option_id: 43 }])]) }),
+  })
+  const page = await open('/student/courses/1/quizzes/7')
+  const startButton = page.find('start')[0]
+  click(startButton)
+  click(startButton)
+  await flush()
+  assert.equal(sentRequests().filter((r) => r === `POST ${PLAYER}/quiz-attempts`).length, 1)
+  assert.match(textOf(page.find('start')[0]), /Đang mở bài làm/)
+  assert.equal('disabled' in page.find('start')[0].props, true)
+
+  release()
+  await flush()
+  assert.equal(page.find('attempt').length, 1)
+  assert.match(textOf(page.find('unsaved-notice')[0]), /câu trả lời hiện chưa được lưu lên máy chủ/)
+  assert.match(textOf(page.find('progress')[0]), /Đã trả lời 1\/2 câu/) // draft được khôi phục
+  assert.match(textOf(page.find('question')[0]), /Câu 1\. Câu hỏi thứ nhất/)
+
+  change(page.find('option-42')[0])
+  await flush()
+  assert.equal(page.find('option-42')[0].props.checked, true)
+  assert.match(textOf(page.find('progress')[0]), /Đã trả lời 2\/2 câu/)
+  change(page.find('option-41')[0])
+  await flush()
+  assert.equal(page.find('option-41')[0].props.checked, true)
+  assert.equal(page.find('option-42')[0].props.checked, undefined)
+  await click(page.find('clear')[0])
+  await flush()
+  assert.match(textOf(page.find('progress')[0]), /Đã trả lời 1\/2 câu/)
+
+  await click(page.find('nav-2')[0])
+  await flush()
+  assert.match(textOf(page.find('question')[0]), /Câu 2\. Câu hỏi thứ hai/)
+  assert.equal(page.find('option-43')[0].props.checked, true)
+
+  // Không lộ đáp án/giải thích, nút nộp chưa hoạt động, chỉ có một POST start.
+  assert.doesNotMatch(page.text(), /SECRET_EXPLANATION/)
+  assert.equal('disabled' in page.find('submit')[0].props, true)
+  assert.equal(page.find('submit')[0].props.onClick, undefined)
+  assert.deepEqual(calls.filter((c) => c.method !== 'get').map((c) => `${c.method} ${api.getUri(c)}`), [`post ${PLAYER}/quiz-attempts`])
+})
+
+test('PLAYER05: remounting the player goes back to intro and never starts on its own', async () => {
+  serve({
+    [`GET ${PLAYER}`]: [200, quizDetail()],
+    [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+    [`POST ${PLAYER}/quiz-attempts`]: [201, startPayload()],
+  })
+  let page = await open('/student/courses/1/quizzes/7')
+  await click(page.find('start')[0])
+  await flush()
+  assert.equal(page.find('attempt').length, 1)
+  page.unmount()
+
+  page = await open('/student/courses/1/quizzes/7')
+  assert.equal(page.find('quiz-info').length, 1)
+  assert.equal(page.find('attempt').length, 0)
+  await flush()
+  assert.equal(sentRequests().filter((r) => r.startsWith('POST')).length, 1)
+})
+
+test('PLAYER06: a failed start is not retried automatically and warns before a manual retry', async () => {
+  serve({
+    [`GET ${PLAYER}`]: [200, quizDetail()],
+    [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+    [`POST ${PLAYER}/quiz-attempts`]: [503, { message: 'Gemini quota exceeded at /var/www/app.php' }],
+  })
+  const page = await open('/student/courses/1/quizzes/7')
+  await click(page.find('start')[0])
+  await flush()
+  assert.match(textOf(page.find('error')[0]), /Máy chủ đang gặp sự cố/)
+  assert.match(textOf(page.find('start-uncertain')[0]), /hệ thống sẽ tiếp tục đúng bài làm đó/)
+  assert.doesNotMatch(page.text(), /Gemini|\/var\/www/)
+  await flush()
+  assert.equal(sentRequests().filter((r) => r.startsWith('POST')).length, 1)
+
+  serve({ ...routes, [`POST ${PLAYER}/quiz-attempts`]: [201, startPayload()] })
+  await click(page.find('retry')[0])
+  await flush()
+  assert.equal(sentRequests().filter((r) => r.startsWith('POST')).length, 2)
+  assert.equal(page.find('attempt').length, 1)
+})
+
+test('FLOW01: sidebar → courses → quiz list → quiz intro uses GET requests only', async () => {
   serve({
     'GET /api/courses': [200, courseList],
     'GET /api/courses/1': [200, { course: courseList.courses[0] }],
     'GET /api/courses/1/learning-objects': [200, learningObjectList],
     'GET /api/courses/1/learning-objects/7': [200, quizDetail()],
+    'GET /api/courses/1/learning-objects/7/quiz-attempts': [200, quizHistory],
   })
   const page = await open('/dashboard/student')
   const sidebarLink = findLink(page.root, '/student/courses')
@@ -364,5 +493,97 @@ test('FLOW01: sidebar → courses → quiz list → quiz skeleton uses GET reque
   assert.equal(page.find('quiz-info').length, 1)
 
   assert.equal(calls.every((c) => c.method === 'get'), true)
-  assert.equal(sentRequests().some((r) => r.includes('quiz-attempts')), false)
+  assert.equal(sentRequests().some((r) => r.startsWith('POST')), false)
+})
+
+test('PLAYER07: query or hash changes keep the in-progress session, answers and send no extra GET', async () => {
+  serve({
+    [`GET ${PLAYER}`]: [200, quizDetail()],
+    [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+    [`POST ${PLAYER}/quiz-attempts`]: [201, startPayload()],
+  })
+  const page = await open('/student/courses/1/quizzes/7')
+  await click(page.find('start')[0])
+  await flush()
+  change(page.find('option-42')[0])
+  await flush()
+  const requestsBefore = sentRequests()
+
+  for (const path of ['/student/courses/1/quizzes/7?ref=email', '/student/courses/1/quizzes/7?ref=email#top']) {
+    await router.push(path)
+    await flush()
+    assert.equal(page.find('attempt').length, 1, path)
+    assert.equal(page.find('quiz-info').length, 0, path)
+    assert.equal(page.find('option-42')[0].props.checked, true, path)
+    assert.match(textOf(page.find('progress')[0]), /Đã trả lời 1\/2 câu/)
+  }
+  assert.deepEqual(sentRequests(), requestsBefore)
+})
+
+test('PLAYER08: a real course or quiz change replaces the session and ignores the old late response', async () => {
+  let releaseOld
+  const otherQuiz = '/api/courses/1/learning-objects/9'
+  serve({
+    [`GET ${PLAYER}`]: () => new Promise((resolve) => { releaseOld = () => resolve([200, quizDetail()]) }),
+    [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+    [`GET ${otherQuiz}`]: [200, { learning_object: { ...quizDetail().learning_object, id: 9, title: 'Quiz chương 2' } }],
+    [`GET ${otherQuiz}/quiz-attempts`]: [200, { attempts: [], latest_score: null, best_score: null }],
+    'GET /api/courses/2/learning-objects/9': [200, { learning_object: { ...quizDetail().learning_object, id: 9, title: 'Quiz khóa 2' } }],
+    'GET /api/courses/2/learning-objects/9/quiz-attempts': [200, { attempts: [] }],
+  })
+  const page = await open('/student/courses/1/quizzes/7')
+  await router.push('/student/courses/1/quizzes/9')
+  await flush()
+  assert.match(page.text(), /Quiz chương 2/)
+
+  releaseOld() // response của quiz 7 về muộn sau khi đã đổi sang quiz 9
+  await flush()
+  assert.match(page.text(), /Quiz chương 2/)
+  assert.doesNotMatch(page.text(), /Kiểm tra 15 phút/)
+
+  await router.push('/student/courses/2/quizzes/9')
+  await flush()
+  assert.match(page.text(), /Quiz khóa 2/)
+  assert.deepEqual(sentRequests(), [
+    `GET ${PLAYER}`,
+    `GET ${PLAYER}/quiz-attempts`,
+    `GET ${otherQuiz}`,
+    `GET ${otherQuiz}/quiz-attempts`,
+    'GET /api/courses/2/learning-objects/9',
+    'GET /api/courses/2/learning-objects/9/quiz-attempts',
+  ])
+  assert.equal(calls.some((c) => c.method !== 'get'), false)
+})
+
+test('PLAYER09: beforeunload warns only while there are unsaved answer changes', async () => {
+  const listeners = new Map()
+  const { addEventListener, removeEventListener } = globalThis.window
+  globalThis.window.addEventListener = (type, handler) => listeners.set(type, handler)
+  globalThis.window.removeEventListener = (type, handler) => { if (listeners.get(type) === handler) listeners.delete(type) }
+  const fire = () => {
+    const event = { prevented: false, returnValue: undefined, preventDefault() { this.prevented = true } }
+    listeners.get('beforeunload')(event)
+    return event.prevented
+  }
+  try {
+    serve({
+      [`GET ${PLAYER}`]: [200, quizDetail()],
+      [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+      [`POST ${PLAYER}/quiz-attempts`]: [201, startPayload([{ question_id: 21, selected_option_id: 41 }])],
+    })
+    const page = await open('/student/courses/1/quizzes/7')
+    assert.equal(fire(), false) // intro
+    await click(page.find('start')[0])
+    await flush()
+    assert.equal(fire(), false) // draft từ server chưa bị đổi
+    change(page.find('option-42')[0])
+    await flush()
+    assert.equal(fire(), true)
+    page.unmount()
+    mounted = null
+    assert.equal(listeners.has('beforeunload'), false)
+  } finally {
+    globalThis.window.addEventListener = addEventListener
+    globalThis.window.removeEventListener = removeEventListener
+  }
 })
