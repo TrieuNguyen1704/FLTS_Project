@@ -421,10 +421,12 @@ test('PLAYER04: start runs only on click, once for a double click, and the stude
   assert.match(textOf(page.find('question')[0]), /Câu 2\. Câu hỏi thứ hai/)
   assert.equal(page.find('option-43')[0].props.checked, true)
 
-  // Không lộ đáp án/giải thích, nút nộp chưa hoạt động, chỉ có một POST start.
+  // Không lộ đáp án/giải thích trước khi nộp; nút nộp chỉ mở hộp xác nhận, chưa gửi POST submit.
   assert.doesNotMatch(page.text(), /SECRET_EXPLANATION/)
-  assert.equal('disabled' in page.find('submit')[0].props, true)
-  assert.equal(page.find('submit')[0].props.onClick, undefined)
+  assert.equal('disabled' in page.find('submit')[0].props, false)
+  await click(page.find('submit')[0])
+  await flush()
+  assert.equal(page.find('submit-confirm').length, 1)
   assert.deepEqual(calls.filter((c) => c.method !== 'get').map((c) => `${c.method} ${api.getUri(c)}`), [`post ${PLAYER}/quiz-attempts`])
 })
 
@@ -743,7 +745,7 @@ test('PLAYER13: a 422 without validation errors locks the inputs with a safe mes
   })
 })
 
-test('PLAYER14: a timed_out autosave response ends the attempt without editable inputs or answers shown', async () => {
+test('PLAYER14: a timed_out autosave response ends the attempt without editable inputs; explanations appear only afterwards', async () => {
   await withFakeTimers(async () => {
     const page = await openAttempt({
       [`PATCH ${PLAYER}/quiz-attempts/11`]: [200, {
@@ -756,15 +758,212 @@ test('PLAYER14: a timed_out autosave response ends the attempt without editable 
     })
     change(page.find('option-41')[0])
     await flush()
+    assert.doesNotMatch(page.text(), /SECRET_EXPLANATION/) // chưa kết thúc: không có giải thích
     mock.timers.tick(15000)
     await flush()
     assert.equal(page.find('completed').length, 1)
     assert.match(textOf(page.find('timed-out')[0]), /tự động nộp bài do hết thời gian/)
     assert.equal(page.find('attempt').length, 0)
     assert.equal(page.find('option-41').length, 0)
-    assert.doesNotMatch(page.text(), /SECRET_EXPLANATION/)
+    // Server đã chấm và trả chi tiết: hiển thị kết quả (FAST-02).
+    assert.match(textOf(page.find('result-21')[0]), /SECRET_EXPLANATION/)
     mock.timers.tick(30000)
     await flush()
     assert.equal(patches().length, 1)
   })
+})
+
+// ---------- Timer, nộp bài và kết quả (FAST-02) ----------
+
+const submitResponse = () => ({
+  attempt: { id: 11, status: 'completed', score: 50, total_correct: 1, auto_submitted: false },
+  latest_score: 50,
+  best_score: 75,
+  // Cố ý đảo thứ tự so với câu hỏi: view phải ghép theo question_id.
+  results: [
+    { question_id: 22, selected_option_id: null, correct_option_id: 43, is_correct: false, explanation: 'Giải thích câu hai <b>đậm</b>', citations: [] },
+    { question_id: 21, selected_option_id: 42, correct_option_id: 42, is_correct: true, explanation: 'Giải thích câu một', citations: [{ vector_id: '1:2:2', document_id: 1, document_name: 'tai-lieu.pdf', source_locator: 'page 9' }] },
+  ],
+  timed_out: false,
+})
+const posts = (suffix) => calls.filter((c) => c.method === 'post' && api.getUri(c).endsWith(suffix))
+const hasInnerHtml = (node) => 'innerHTML' in node.props || node.children.some(hasInnerHtml)
+
+test('PLAYER15: submitting needs confirmation, posts once and renders results matched by question id', async () => {
+  const page = await openAttempt({ [`POST ${PLAYER}/quiz-attempts/11/submit`]: [200, submitResponse()] })
+  change(page.find('option-42')[0])
+  await flush()
+
+  await click(page.find('submit')[0])
+  await flush()
+  assert.match(textOf(page.find('submit-confirm')[0]), /Đã trả lời: 1\/2 câu/)
+  assert.match(textOf(page.find('confirm-unanswered')[0]), /Còn 1 câu bỏ trống/)
+  await click(page.find('cancel-submit')[0])
+  await flush()
+  assert.equal(page.find('submit-confirm').length, 0)
+  assert.equal(posts('/submit').length, 0)
+
+  await click(page.find('submit')[0])
+  await flush()
+  const confirm = page.find('confirm-submit')[0]
+  click(confirm)
+  click(confirm)
+  await flush()
+  assert.equal(posts('/submit').length, 1)
+  assert.deepEqual(JSON.parse(posts('/submit')[0].data), {
+    answers: [
+      { question_id: 21, selected_option_id: 42 },
+      { question_id: 22, selected_option_id: null },
+    ],
+  })
+  assert.equal(posts('/submit')[0].timeout, 30000)
+
+  assert.equal(page.find('completed').length, 1)
+  assert.equal(textOf(page.find('result-score')[0]).trim(), '50%')
+  assert.equal(textOf(page.find('result-correct')[0]).trim(), '1/2')
+  assert.equal(textOf(page.find('result-passed')[0]).trim(), 'Chưa đạt') // 50 < ngưỡng 60
+  const first = textOf(page.find('result-21')[0])
+  assert.match(first, /Câu 1\. Câu hỏi thứ nhất/)
+  assert.match(first, /Đúng/)
+  assert.match(first, /Bạn chọn: Lựa chọn B/)
+  assert.match(first, /Đáp án đúng: Lựa chọn B/)
+  assert.match(first, /Giải thích câu một/)
+  assert.match(textOf(page.find('result-citations')[0]), /Nguồn: tai-lieu\.pdf — page 9/)
+  const second = textOf(page.find('result-22')[0])
+  assert.match(second, /Câu 2\. Câu hỏi thứ hai/)
+  assert.match(second, /Bạn chọn: Bỏ trống/)
+  assert.match(second, /Đáp án đúng: Lựa chọn C/)
+  assert.match(second, /Giải thích câu hai <b>đậm<\/b>/) // hiển thị dạng văn bản, không render HTML
+  assert.equal(hasInnerHtml(page.root), false)
+  assert.equal(page.find('option-42').length, 0)
+  assert.equal(calls.some((c) => c.method === 'patch'), false)
+})
+
+test('PLAYER16: the countdown follows server time, warns near the end and auto-submits once at zero', async () => {
+  const serverTime = '2026-10-30T06:53:46.000000Z'
+  mock.timers.enable({ apis: ['setInterval', 'setTimeout', 'Date'], now: Date.parse(serverTime) })
+  try {
+    const timed = startPayload()
+    timed.attempt.expires_at = '2026-10-30T07:18:46.000000Z'
+    timed.server_time = serverTime
+    const page = await openAttempt({
+      [`POST ${PLAYER}/quiz-attempts`]: [201, timed],
+      [`POST ${PLAYER}/quiz-attempts/11/submit`]: [200, { ...submitResponse(), timed_out: true, attempt: { ...submitResponse().attempt, auto_submitted: true } }],
+    })
+    assert.match(textOf(page.find('timer')[0]), /25:00/)
+    assert.equal(page.find('timer')[0].props['data-warning'], 'false')
+    assert.match(textOf(page.find('timer-note')[0]), /ước lượng theo giờ máy chủ/)
+
+    mock.timers.tick(24 * 60 * 1000 + 1000) // còn 59 giây
+    await flush()
+    assert.match(textOf(page.find('timer')[0]), /00:59/)
+    assert.equal(page.find('timer')[0].props['data-warning'], 'true')
+
+    mock.timers.tick(59 * 1000)
+    await flush(8)
+    assert.equal(posts('/submit').length, 1)
+    assert.equal(page.find('completed').length, 1)
+    assert.match(textOf(page.find('timed-out')[0]), /tự động nộp bài do hết thời gian/)
+    mock.timers.tick(30000)
+    await flush()
+    assert.equal(posts('/submit').length, 1)
+    assert.equal(calls.filter((c) => c.method === 'post' && api.getUri(c).endsWith('/quiz-attempts')).length, 1) // không tạo lượt mới
+  } finally {
+    mounted?.unmount()
+    mounted = null
+    mock.timers.reset()
+  }
+})
+
+test('PLAYER17: an uncertain submit is verified; a missing attempt is explained and the student may resume or recheck', async () => {
+  const page = await openAttempt({ [`POST ${PLAYER}/quiz-attempts/11/submit`]: [503, { message: 'Gemini quota at /var/www/x.php' }] })
+  serve({ ...routes, [`GET ${PLAYER}/quiz-attempts`]: [200, { attempts: [{ id: 3, status: 'completed', score: 100 }], latest_score: 100, best_score: 100 }] })
+  change(page.find('option-41')[0])
+  await flush()
+  await click(page.find('submit')[0])
+  await flush()
+  await click(page.find('confirm-submit')[0])
+  await flush()
+  assert.match(textOf(page.find('verify-not-found')[0]), /chưa thể kết luận là nộp thất bại/)
+  assert.doesNotMatch(page.text(), /Gemini|\/var\/www/)
+  assert.equal(page.find('resume').length, 1)
+  assert.equal(posts('/submit').length, 1)
+
+  await click(page.find('resume')[0])
+  await flush()
+  assert.equal(page.find('attempt').length, 1)
+  assert.equal(page.find('option-41')[0].props.checked, true)
+
+  await click(page.find('submit')[0])
+  await flush()
+  serve({
+    ...routes,
+    [`POST ${PLAYER}/quiz-attempts/11/submit`]: [422, { message: 'This attempt has already been submitted.' }],
+    [`GET ${PLAYER}/quiz-attempts`]: [200, { attempts: [{ id: 11, status: 'completed', score: 0, total_correct: 0, auto_submitted: false }], latest_score: 0, best_score: 100 }],
+  })
+  await click(page.find('confirm-submit')[0])
+  await flush()
+  assert.equal(page.find('completed').length, 1)
+  assert.equal(textOf(page.find('result-score')[0]).trim(), '0%')
+  assert.match(textOf(page.find('result-summary-only')[0]), /chỉ có điểm tổng hợp/)
+  assert.equal(page.find('result-details').length, 0)
+  assert.equal(posts('/submit').length, 2) // lần thứ hai là do sinh viên chủ động nộp lại
+  assert.equal(calls.filter((c) => c.method === 'post' && api.getUri(c).endsWith('/quiz-attempts')).length, 1)
+})
+
+test('PLAYER18: a failed verification offers "Kiểm tra lại" and a locked attempt can be verified from the player', async () => {
+  let page = await openAttempt({ [`POST ${PLAYER}/quiz-attempts/11/submit`]: [500, {}] })
+  serve({ ...routes, [`GET ${PLAYER}/quiz-attempts`]: [500, { message: 'SQLSTATE' }] })
+  await click(page.find('submit')[0])
+  await flush()
+  await click(page.find('confirm-submit')[0])
+  await flush()
+  assert.match(textOf(page.find('verify-failed')[0]), /Bài có thể đã được nộp/)
+  assert.equal(page.find('resume').length, 0)
+  serve({ ...routes, [`GET ${PLAYER}/quiz-attempts`]: [200, { attempts: [{ id: 11, status: 'completed', score: 100, total_correct: 2 }], latest_score: 100, best_score: 100 }] })
+  await click(page.find('verify-again')[0])
+  await flush()
+  assert.equal(textOf(page.find('result-passed')[0]).trim(), 'Đạt')
+  page.unmount()
+  mounted = null
+  calls = [] // phần hai đếm request riêng
+
+  await withFakeTimers(async () => {
+    page = await openAttempt({ [`PATCH ${PLAYER}/quiz-attempts/11`]: [422, { message: 'This attempt has already been submitted.' }] })
+    change(page.find('option-41')[0])
+    await flush()
+    mock.timers.tick(15000)
+    await flush()
+    assert.equal('disabled' in page.find('submit')[0].props, true)
+    serve({ ...routes, [`GET ${PLAYER}/quiz-attempts`]: [200, { attempts: [{ id: 11, status: 'completed', score: 0, total_correct: 0 }] }] })
+    await click(page.find('verify-locked')[0])
+    await flush()
+    assert.equal(page.find('completed').length, 1)
+    assert.equal(posts('/submit').length, 0)
+  })
+})
+
+test('PLAYER19: a submit response arriving after unmount is ignored without errors', async () => {
+  let release
+  const page = await openAttempt({
+    [`POST ${PLAYER}/quiz-attempts/11/submit`]: () => new Promise((resolve) => { release = () => resolve([200, submitResponse()]) }),
+  })
+  await click(page.find('submit')[0])
+  await flush()
+  await click(page.find('confirm-submit')[0])
+  await flush()
+  assert.equal(page.find('submitting').length, 1)
+  page.unmount()
+  mounted = null
+  const warnings = []
+  const warn = console.warn
+  console.warn = (...args) => warnings.push(args)
+  try {
+    release()
+    await flush()
+  } finally {
+    console.warn = warn
+  }
+  assert.equal(warnings.length, 0)
+  assert.equal(posts('/submit').length, 1)
 })

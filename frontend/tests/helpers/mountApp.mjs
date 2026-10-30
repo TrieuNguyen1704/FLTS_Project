@@ -2,6 +2,9 @@
 // Chỉ hỗ trợ đủ cho test: element, text, comment, props/attrs và handler sự kiện.
 import { createRenderer, nextTick } from 'vue'
 
+// Đích của <Teleport to="body"> (vd. AppModal); mỗi lần mount có một body riêng.
+let currentBody = null
+
 function createNode(fields) {
   return { parent: null, children: [], props: {}, ...fields }
 }
@@ -33,7 +36,7 @@ const nodeOps = {
     const siblings = node.parent?.children ?? []
     return siblings[siblings.indexOf(node) + 1] ?? null
   },
-  querySelector: () => null,
+  querySelector: (selector) => (selector === 'body' ? currentBody : null),
   setScopeId: () => {},
 }
 
@@ -68,14 +71,18 @@ export async function flush(times = 5) {
 
 export function mountApp(rootComponent, plugins) {
   const root = createNode({ tag: 'root' })
+  const body = createNode({ tag: 'body' })
+  currentBody = body
   const app = createApp(rootComponent)
   for (const plugin of plugins) app.use(plugin)
   app.mount(root)
+  // Nội dung teleport nằm ở body, nên text/find tìm cả root lẫn body.
   return {
     root,
+    body,
     unmount: () => app.unmount(),
-    text: () => textOf(root),
-    find: (name) => findAll(root, byTest(name)),
+    text: () => textOf(root) + textOf(body),
+    find: (name) => [...findAll(root, byTest(name)), ...findAll(body, byTest(name))],
   }
 }
 

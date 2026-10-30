@@ -621,12 +621,11 @@ test('TC28: saveDraft errors never trigger startAttempt or any other request', a
   }
 })
 
-test('TC29: the other six endpoints keep their behaviour and ignore an extra argument', async () => {
+test('TC29: the five endpoints without timeout support keep their behaviour and ignore an extra argument', async () => {
   respond(200, {})
   await learningObjects.list(3, { timeout: 1 })
   await learningObjects.show(3, 7, { timeout: 1 })
   await learningObjects.startAttempt(3, 7, { timeout: 1 })
-  await learningObjects.submitAttempt(3, 7, 11, payload, { timeout: 1 })
   await learningObjects.attemptHistory(3, 7)
   await learningObjects.quizResults(3, 7)
   await learningObjects.attemptResult(3, 7, 55, { timeout: 1 })
@@ -634,10 +633,33 @@ test('TC29: the other six endpoints keep their behaviour and ignore an extra arg
     ['get', '/api/courses/3/learning-objects', 0],
     ['get', B, 0],
     ['post', `${B}/quiz-attempts`, 0],
-    ['post', `${B}/quiz-attempts/11/submit`, 0],
     ['get', `${B}/quiz-attempts`, 0],
     ['get', `${B}/quiz-results`, 0],
     ['get', `${B}/quiz-results/attempts/55`, 0],
   ])
-  assert.deepEqual(sentBody(calls[3]), payload)
+})
+
+test('TC30: submitAttempt accepts the same optional { timeout } as saveDraft, backward compatible', async () => {
+  respond(200, completed)
+  await learningObjects.submitAttempt(3, 7, 11, payload)
+  await learningObjects.submitAttempt(3, 7, 11, payload, { timeout: 30000 })
+  const [plain, timed] = calls
+  assert.equal(plain.timeout, 0)
+  assert.equal(timed.timeout, 30000)
+  assert.equal(sentUrl(timed), `${B}/quiz-attempts/11/submit`)
+  assert.deepEqual(sentBody(timed), payload)
+  assert.deepEqual(sentHeaders(timed), sentHeaders(plain))
+
+  calls = []
+  for (const options of [null, { timeout: '30000' }, { timeout: 0 }, { headers: {} }, { timeout: 30000, url: '/x' }]) {
+    await assert.rejects(learningObjects.submitAttempt(3, 7, 11, payload, options), TypeError)
+  }
+  assert.equal(calls.length, 0)
+
+  api.defaults.adapter = async (config) => {
+    calls.push(config)
+    throw new AxiosError('timeout of 30000ms exceeded', AxiosError.ECONNABORTED, config, {})
+  }
+  await assert.rejects(learningObjects.submitAttempt(3, 7, 11, payload, { timeout: 30000 }), { status: 0, code: 'ECONNABORTED' })
+  assert.equal(calls.length, 1) // không retry
 })

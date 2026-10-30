@@ -69,10 +69,10 @@ const collectionPath = (courseId) => `/courses/${routeId(courseId, 'courseId')}/
 const objectPath = (courseId, learningObjectId) =>
   `${collectionPath(courseId)}/${routeId(learningObjectId, 'learningObjectId')}`
 
-// Option tùy chọn của saveDraft: chỉ nhận timeout (ms). Không cho caller truyền headers/url/baseURL
+// Option tùy chọn của saveDraft/submitAttempt: chỉ nhận timeout (ms). Không cho caller truyền headers/url/baseURL
 // hay config axios khác; giá trị sai bị từ chối trước khi gửi, không tự ép kiểu chuỗi sang số.
-// Timeout phía client không có nghĩa server chưa ghi draft: session phải coi kết quả là chưa xác định.
-function saveDraftConfig(options) {
+// Timeout phía client không có nghĩa server chưa xử lý: session phải coi kết quả là chưa xác định.
+function timeoutConfig(options) {
   if (options === undefined) return undefined
   if (options === null || typeof options !== 'object' || Array.isArray(options)) {
     throw new TypeError('options phải là object.')
@@ -116,13 +116,20 @@ export const learningObjects = {
       api.patch(
         `${objectPath(courseId, learningObjectId)}/quiz-attempts/${routeId(attemptId, 'attemptId')}`,
         payload,
-        saveDraftConfig(options),
+        timeoutConfig(options),
       ),
     ),
 
   // payload: { answers } phải đủ mọi câu (câu bỏ trống gửi selected_option_id: null), nếu không backend trả 422.
-  submitAttempt: (courseId, learningObjectId, attemptId, payload) =>
-    send(() => api.post(`${objectPath(courseId, learningObjectId)}/quiz-attempts/${routeId(attemptId, 'attemptId')}/submit`, payload)),
+  // options (tùy chọn): { timeout } tính bằng ms. Sau hạn nộp, server chỉ chấm draft đã lưu và bỏ qua payload.
+  submitAttempt: (courseId, learningObjectId, attemptId, payload, options) =>
+    send(() =>
+      api.post(
+        `${objectPath(courseId, learningObjectId)}/quiz-attempts/${routeId(attemptId, 'attemptId')}/submit`,
+        payload,
+        timeoutConfig(options),
+      ),
+    ),
 
   attemptHistory: (courseId, learningObjectId, page) =>
     send(() => api.get(`${objectPath(courseId, learningObjectId)}/quiz-attempts`, pageConfig(page))),

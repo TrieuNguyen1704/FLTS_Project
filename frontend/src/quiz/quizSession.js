@@ -1,13 +1,17 @@
 import { computed, reactive, readonly } from 'vue'
 import { learningObjects, LearningObjectsApiError } from '../services/learningObjects.js'
+import { createServerClock } from './quizClock.js'
 
 /**
- * Sprint 3 — lõi phiên làm Quiz của sinh viên: intro, start/resume, answer state (B2) và autosave (B3).
- * Không phụ thuộc component: view chỉ đọc `state` và gọi các method; test chạy bằng service/scheduler giả.
- * Chưa có timer/submit (B4–B5).
+ * Sprint 3 — lõi phiên làm Quiz của sinh viên: intro, start/resume, answer state (B2), autosave (B3),
+ * đồng hồ theo giờ server, hết hạn, nộp bài và xác minh kết quả (FAST-02).
+ * Không phụ thuộc component: view chỉ đọc `state` và gọi các method; test chạy bằng service/scheduler/clock giả.
  *
- * Phase: idle → loading → intro → starting → in_progress | completed
+ * Phase: idle → loading → intro → starting → in_progress
+ *        in_progress → submitting (sinh viên nộp) | expiring (đồng hồ về 0) → completed (có chi tiết từng câu)
+ *        submitting/expiring → verifying (kết quả chưa rõ) → completed_summary (điểm từ lịch sử) | in_progress
  *        lỗi: recoverable_error (thử lại thủ công) | fatal_error; dispose() → disposed.
+ * Không bao giờ gọi startAttempt để xác minh: start khi bài cũ đã hết hạn sẽ tạo lượt làm mới.
  *
  * Kênh lưu (state.save) độc lập với phase: idle | saving | saved | retrying | stopped.
  * dirty = editSeq > savedSeq; savedSeq chỉ tăng tới seq của snapshot được server xác nhận.
@@ -17,7 +21,16 @@ import { learningObjects, LearningObjectsApiError } from '../services/learningOb
 
 export const AUTOSAVE_INTERVAL_MS = 15000
 export const SAVE_TIMEOUT_MS = 20000
+export const SUBMIT_TIMEOUT_MS = 30000
+// Submit chờ PATCH đang chạy tối đa hơn timeout của PATCH một chút; hết hạn chờ thì chuyển sang xác minh.
+export const SUBMIT_WAIT_MS = SAVE_TIMEOUT_MS + 5000
+export const TIMER_TICK_MS = 1000
+export const TIMER_WARNING_MS = 60000
+// Còn dưới mốc này mà có thay đổi chưa lưu thì lưu ngay một lần: sau hạn server chỉ chấm draft đã lưu.
+export const FINAL_SAVE_MS = 20000
 const MAX_SAVE_FAILURES = 3
+// PATCH được phép cập nhật state trong các phase này (kể cả khi đang nộp, để biết server đã kết thúc bài).
+const SAVE_PHASES = new Set(['in_progress', 'submitting', 'expiring'])
 
 const FATAL_STATUSES = new Set([401, 403, 404, 422])
 
@@ -105,6 +118,20 @@ function toResult(data) {
   }
 }
 
+// Tóm tắt từ lịch sử (sau khi xác minh): không có chi tiết từng câu, không suy đoán lý do kết thúc.
+function toSummary(attempt, history) {
+  return {
+    score: numberOrNull(attempt.score),
+    totalCorrect: numberOrNull(attempt.total_correct),
+    autoSubmitted: attempt.auto_submitted === true,
+    timedOut: null,
+    latestScore: numberOrNull(history?.latest_score),
+    bestScore: numberOrNull(history?.best_score),
+    submittedAt: validTime(attempt.submitted_at),
+    results: [],
+  }
+}
+
 export function createQuizSession({
   courseId,
   learningObjectId,
@@ -112,7 +139,10 @@ export function createQuizSession({
   scheduler = defaultScheduler,
   autosaveIntervalMs = AUTOSAVE_INTERVAL_MS,
   saveTimeoutMs = SAVE_TIMEOUT_MS,
+  submitTimeoutMs = SUBMIT_TIMEOUT_MS,
+  now = () => Date.now(),
 }) {
+  const clock = createServerClock(now)
   const state = reactive({
     phase: 'idle',
     quiz: null, // thông tin intro từ show()
@@ -129,6 +159,8 @@ export function createQuizSession({
     editSeq: 0,
     savedSeq: 0,
     save: { status: 'idle', failures: 0, lastSavedAt: null, reason: null, message: '' },
+    timer: null, // { remainingMs, warning } khi có hạn nộp; null nếu không giới hạn thời gian
+    verification: null, // { status: 'checking' | 'failed' | 'not_found', canResume }
   })
 
   // Mỗi thao tác mạng mang một generation; response của generation cũ (hoặc sau dispose) bị bỏ qua.
@@ -139,6 +171,10 @@ export function createQuizSession({
   let timer = null
   let skipTicks = 0
   let autosaveEnabled = true
+  let ticker = null
+  let finalSaveTriggered = false
+  let submitRequest = null
+  let verifyRequest = null
   const waiters = new Set() // awaitPendingSave đang chờ: dọn khi dispose
 
   const isCurrent = (token) => token === generation && state.phase !== 'disposed'
@@ -196,6 +232,7 @@ export function createQuizSession({
 
   function finishWith(data) {
     stopScheduler()
+    stopTicker()
     state.result = toResult(data)
     state.phase = 'completed'
   }
@@ -245,8 +282,10 @@ export function createQuizSession({
     state.editSeq = 0
     state.savedSeq = 0
     state.save = { status: 'idle', failures: 0, lastSavedAt: null, reason: null, message: '' }
+    state.verification = null
     state.phase = 'in_progress'
     startScheduler()
+    startTicker()
     return true
   }
 
@@ -260,8 +299,10 @@ export function createQuizSession({
     state.error = null
     startRequest = (async () => {
       try {
+        const sentAt = now()
         const data = await service.startAttempt(courseId, learningObjectId)
         if (!isCurrent(token)) return false
+        clock.sync(data?.server_time, sentAt, now())
         return applyAttempt(data)
       } catch (err) {
         if (!isCurrent(token)) return false
@@ -402,8 +443,10 @@ export function createQuizSession({
     state.save.status = 'saving'
     saveRequest = (async () => {
       try {
+        const sentAt = now()
         const data = await service.saveDraft(courseId, learningObjectId, attemptId, payload, { timeout: saveTimeoutMs })
-        if (!isCurrent(token) || state.phase !== 'in_progress' || state.attempt?.id !== attemptId) return false
+        if (!isCurrent(token) || !SAVE_PHASES.has(state.phase) || state.attempt?.id !== attemptId) return false
+        clock.sync(data?.server_time, sentAt, now())
         if (data?.attempt?.id !== attemptId) {
           stopSaving('invalid_response')
           return false
@@ -425,7 +468,7 @@ export function createQuizSession({
         state.save.message = ''
         return true
       } catch (err) {
-        if (!isCurrent(token) || state.phase !== 'in_progress') return false
+        if (!isCurrent(token) || !SAVE_PHASES.has(state.phase)) return false
         return handleSaveError(err)
       } finally {
         if (token === generation) saveRequest = null
@@ -473,13 +516,188 @@ export function createQuizSession({
     })
   }
 
+  // ---------- Đồng hồ (ước lượng theo giờ server; backend quyết định hạn nộp thật) ----------
+
+  function startTicker() {
+    if (ticker !== null || state.phase !== 'in_progress') return
+    if (!updateTimer() || state.phase !== 'in_progress') return
+    ticker = scheduler.setInterval(updateTimer, TIMER_TICK_MS)
+  }
+
+  function stopTicker() {
+    if (ticker !== null) {
+      scheduler.clearInterval(ticker)
+      ticker = null
+    }
+  }
+
+  // Tính lại thời gian còn lại từ mốc expires_at; gọi được bất cứ lúc nào (tick, tab hiện lại).
+  // Trả false nếu không có hạn nộp hoặc không còn ở in_progress.
+  function updateTimer() {
+    if (state.phase !== 'in_progress') {
+      stopTicker()
+      return false
+    }
+    const remaining = clock.remainingMs(state.attempt?.expiresAt)
+    if (remaining === null) {
+      state.timer = null
+      stopTicker()
+      return false
+    }
+    state.timer = { remainingMs: Math.max(0, remaining), warning: remaining <= TIMER_WARNING_MS }
+    if (remaining <= 0) {
+      expire()
+      return true
+    }
+    if (remaining <= FINAL_SAVE_MS && !finalSaveTriggered && dirty.value && !saveRequest) {
+      finalSaveTriggered = true
+      flush()
+    }
+    return true
+  }
+
+  // Đồng hồ client về 0: khóa chỉnh sửa và kết thúc bài qua cùng luồng với nộp bài.
+  // Không báo thành công ở đây; chỉ response của server (hoặc lịch sử) mới xác nhận bài đã kết thúc.
+  function expire() {
+    if (state.phase !== 'in_progress') return
+    stopTicker()
+    state.phase = 'expiring'
+    finalize()
+  }
+
+  // ---------- Nộp bài ----------
+
+  const canSubmit = computed(() => state.phase === 'in_progress' && !LOCKING_REASONS.has(state.save.reason))
+
+  // Sinh viên đã xác nhận nộp. Bấm lặp lại dùng chung request; không tự retry POST.
+  function submit() {
+    if (submitRequest) return submitRequest
+    if (!canSubmit.value) return Promise.resolve(false)
+    stopTicker()
+    state.phase = 'submitting'
+    return finalize()
+  }
+
+  // Dừng autosave, chờ PATCH đang chạy (có giới hạn), rồi gửi đúng một POST submit với snapshot mới nhất.
+  function finalize() {
+    stopAutosave()
+    const token = generation
+    const attemptId = state.attempt.id
+    submitRequest = (async () => {
+      try {
+        const settled = await awaitPendingSave(SUBMIT_WAIT_MS)
+        if (!isCurrent(token)) return false
+        // PATCH đang chạy có thể đã kết thúc bài (timed_out/completed) hoặc gặp lỗi fatal: không POST nữa.
+        if (state.phase !== 'submitting' && state.phase !== 'expiring') return state.phase === 'completed'
+        // PATCH vẫn chưa xong: không kiểm soát được thứ tự request, chuyển sang xác minh thay vì POST.
+        if (!settled) return await runVerification()
+        let data
+        try {
+          data = await service.submitAttempt(courseId, learningObjectId, attemptId, snapshot(), { timeout: submitTimeoutMs })
+        } catch (err) {
+          if (!isCurrent(token)) return false
+          if (err instanceof LearningObjectsApiError && [401, 403, 404].includes(err.status)) {
+            state.phase = 'fatal_error'
+            state.error = { message: err.message, retry: null }
+            return false
+          }
+          // Timeout, mạng, 5xx, 409, 422 (đã nộp hoặc dữ liệu không hợp lệ): kết quả chưa rõ, xác minh qua lịch sử.
+          return await runVerification()
+        }
+        if (!isCurrent(token)) return false
+        if (data?.attempt?.id !== attemptId || data.attempt.status !== 'completed') return await runVerification()
+        finishWith(data)
+        return true
+      } finally {
+        if (token === generation) submitRequest = null
+      }
+    })()
+    return submitRequest
+  }
+
+  // ---------- Xác minh qua lịch sử (GET; FLTS có thể tự kết thúc bài đã hết hạn khi được gọi) ----------
+
+  function runVerification() {
+    if (verifyRequest) return verifyRequest
+    if (!state.attempt) return Promise.resolve(false)
+    stopAutosave()
+    stopTicker()
+    const token = generation
+    const attemptId = state.attempt.id
+    state.phase = 'verifying'
+    state.verification = { status: 'checking', canResume: false }
+    verifyRequest = (async () => {
+      try {
+        const data = await service.attemptHistory(courseId, learningObjectId)
+        if (!isCurrent(token) || state.phase !== 'verifying') return false
+        const found = (Array.isArray(data?.attempts) ? data.attempts : []).find((attempt) => attempt?.id === attemptId)
+        if (found && found.status === 'completed') {
+          state.result = toSummary(found, data)
+          state.phase = 'completed_summary'
+          state.verification = null
+          return true
+        }
+        // Chưa thấy bài trong lịch sử: không kết luận nộp thất bại; chỉ cho làm tiếp nếu còn hạn.
+        const remaining = clock.remainingMs(state.attempt.expiresAt)
+        state.verification = { status: 'not_found', canResume: remaining === null || remaining > 0 }
+        return false
+      } catch (err) {
+        if (!isCurrent(token) || state.phase !== 'verifying') return false
+        if (err instanceof LearningObjectsApiError && [401, 403, 404].includes(err.status)) {
+          state.phase = 'fatal_error'
+          state.error = { message: err.message, retry: null }
+          return false
+        }
+        state.verification = { status: 'failed', canResume: false }
+        return false
+      } finally {
+        if (token === generation) verifyRequest = null
+      }
+    })()
+    return verifyRequest
+  }
+
+  // Nút "Kiểm tra lại" / "Kiểm tra trạng thái bài": chỉ khi đang xác minh hoặc autosave bị khóa chờ xác minh.
+  function verifyAttempt() {
+    if (verifyRequest) return verifyRequest
+    const lockedForVerification = state.phase === 'in_progress' && LOCKING_REASONS.has(state.save.reason)
+    const retrying = state.phase === 'verifying' && state.verification?.status !== 'checking'
+    if (!lockedForVerification && !retrying) return Promise.resolve(false)
+    return runVerification()
+  }
+
+  // Sau khi đã giải thích trạng thái chưa rõ, sinh viên có thể làm tiếp (chỉ khi còn hạn).
+  function resumeAfterVerification() {
+    if (state.phase !== 'verifying' || state.verification?.status !== 'not_found') return false
+    const remaining = clock.remainingMs(state.attempt?.expiresAt)
+    if (remaining !== null && remaining <= 0) {
+      state.verification = { status: 'not_found', canResume: false }
+      return false
+    }
+    state.verification = null
+    state.save.status = 'idle'
+    state.save.failures = 0
+    state.save.reason = null
+    state.save.message = ''
+    skipTicks = 0
+    finalSaveTriggered = false
+    autosaveEnabled = true
+    state.phase = 'in_progress'
+    startScheduler()
+    startTicker()
+    return true
+  }
+
   function dispose() {
     generation++
     stopScheduler()
+    stopTicker()
     autosaveEnabled = false
     introRequest = null
     startRequest = null
     saveRequest = null
+    submitRequest = null
+    verifyRequest = null
     for (const waiter of [...waiters]) waiter.resolve(false)
     state.phase = 'disposed'
   }
@@ -491,6 +709,7 @@ export function createQuizSession({
     answeredCount,
     dirty,
     canEdit,
+    canSubmit,
     hasPendingSave: () => saveRequest !== null,
     loadIntro,
     start,
@@ -501,6 +720,12 @@ export function createQuizSession({
     saveNow,
     stopAutosave,
     awaitPendingSave,
+    submit,
+    verifyAttempt,
+    resumeAfterVerification,
+    refreshTimer: () => {
+      updateTimer()
+    },
     dispose,
   }
 }
