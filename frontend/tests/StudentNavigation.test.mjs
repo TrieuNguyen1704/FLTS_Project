@@ -1,4 +1,4 @@
-import { test, beforeEach, afterEach } from 'node:test'
+import { test, beforeEach, afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 import { AxiosError } from 'axios'
@@ -399,7 +399,8 @@ test('PLAYER04: start runs only on click, once for a double click, and the stude
   release()
   await flush()
   assert.equal(page.find('attempt').length, 1)
-  assert.match(textOf(page.find('unsaved-notice')[0]), /câu trả lời hiện chưa được lưu lên máy chủ/)
+  assert.equal(page.find('unsaved-notice').length, 0) // banner "chưa có autosave" của B2 đã bỏ
+  assert.equal(page.find('save-chip')[0].props['data-save'], 'clean')
   assert.match(textOf(page.find('progress')[0]), /Đã trả lời 1\/2 câu/) // draft được khôi phục
   assert.match(textOf(page.find('question')[0]), /Câu 1\. Câu hỏi thứ nhất/)
 
@@ -586,4 +587,184 @@ test('PLAYER09: beforeunload warns only while there are unsaved answer changes',
     globalThis.window.addEventListener = addEventListener
     globalThis.window.removeEventListener = removeEventListener
   }
+})
+
+// ---------- Autosave UI (B3) ----------
+// View tạo session với scheduler mặc định (globalThis.setInterval), nên dùng mock.timers để điều khiển nhịp 15 giây.
+
+const saveResponse = (serverTime = '2026-10-30T07:00:15.000000Z') => ({
+  attempt: { id: 11, status: 'in_progress', draft_answers: [] },
+  server_time: serverTime,
+})
+const chip = (page) => page.find('save-chip')[0]
+const patches = () => calls.filter((c) => c.method === 'patch')
+
+async function openAttempt(extraRoutes) {
+  serve({
+    [`GET ${PLAYER}`]: [200, quizDetail()],
+    [`GET ${PLAYER}/quiz-attempts`]: [200, quizHistory],
+    [`POST ${PLAYER}/quiz-attempts`]: [201, startPayload()],
+    ...extraRoutes,
+  })
+  const page = await open('/student/courses/1/quizzes/7')
+  await click(page.find('start')[0])
+  await flush()
+  return page
+}
+
+async function withFakeTimers(run) {
+  mock.timers.enable({ apis: ['setInterval', 'setTimeout'] })
+  try {
+    await run()
+  } finally {
+    mounted?.unmount()
+    mounted = null
+    mock.timers.reset()
+  }
+}
+
+test('PLAYER10: choosing an answer shows "Chưa lưu", autosave runs after 15s and shows "Đã lưu"', async () => {
+  await withFakeTimers(async () => {
+    const page = await openAttempt({ [`PATCH ${PLAYER}/quiz-attempts/11`]: [200, saveResponse()] })
+    assert.equal(chip(page).props['data-save'], 'clean')
+    assert.match(textOf(chip(page)), /Chưa có thay đổi/)
+
+    change(page.find('option-42')[0])
+    await flush()
+    assert.equal(chip(page).props['data-save'], 'dirty')
+    assert.match(textOf(chip(page)), /Chưa lưu/)
+
+    mock.timers.tick(14999)
+    await flush()
+    assert.equal(patches().length, 0)
+    mock.timers.tick(1)
+    await flush()
+    assert.equal(patches().length, 1)
+    assert.equal(patches()[0].timeout, 20000)
+    assert.deepEqual(JSON.parse(patches()[0].data), {
+      answers: [
+        { question_id: 21, selected_option_id: 42 },
+        { question_id: 22, selected_option_id: null },
+      ],
+    })
+    assert.equal(chip(page).props['data-save'], 'saved')
+    assert.match(textOf(chip(page)), /Đã lưu/)
+    assert.match(textOf(page.find('last-saved')[0]), /Lần lưu gần nhất:/)
+    assert.equal(page.find('save-now').length, 0)
+
+    mock.timers.tick(15000) // không còn thay đổi: không PATCH thêm
+    await flush()
+    assert.equal(patches().length, 1)
+    assert.equal(calls.filter((c) => c.method === 'post').length, 1) // chỉ có POST start ban đầu
+  })
+})
+
+test('PLAYER11: a failed autosave shows a safe warning and "Lưu ngay" retries once', async () => {
+  await withFakeTimers(async () => {
+    const page = await openAttempt({ [`PATCH ${PLAYER}/quiz-attempts/11`]: [500, { message: 'SQLSTATE[HY000] at /var/www/app.php', trace: ['x'] }] })
+    change(page.find('option-41')[0])
+    await flush()
+    mock.timers.tick(15000)
+    await flush()
+    assert.equal(chip(page).props['data-save'], 'retrying')
+    assert.match(textOf(chip(page)), /Lưu thất bại, sẽ thử lại/)
+    assert.match(textOf(page.find('save-retrying')[0]), /Chưa lưu được câu trả lời lên máy chủ/)
+    assert.doesNotMatch(page.text(), /SQLSTATE|\/var\/www|trace/)
+    assert.equal(page.find('save-now').length, 1)
+
+    serve({ ...routes, [`PATCH ${PLAYER}/quiz-attempts/11`]: [200, saveResponse()] })
+    click(page.find('save-now')[0])
+    click(page.find('save-now')[0])
+    await flush()
+    assert.equal(patches().length, 2)
+    assert.equal(chip(page).props['data-save'], 'saved')
+    assert.equal(page.find('save-now').length, 0)
+    assert.equal(page.find('save-retrying').length, 0)
+  })
+})
+
+test('PLAYER12: beforeunload warns while dirty or saving, and stops warning once the server confirmed', async () => {
+  const listeners = new Map()
+  const { addEventListener, removeEventListener } = globalThis.window
+  globalThis.window.addEventListener = (type, handler) => listeners.set(type, handler)
+  globalThis.window.removeEventListener = (type, handler) => { if (listeners.get(type) === handler) listeners.delete(type) }
+  const warns = () => {
+    const event = { prevented: false, preventDefault() { this.prevented = true } }
+    listeners.get('beforeunload')(event)
+    return event.prevented
+  }
+  try {
+    await withFakeTimers(async () => {
+      let release
+      const page = await openAttempt({
+        [`PATCH ${PLAYER}/quiz-attempts/11`]: () => new Promise((resolve) => { release = () => resolve([200, saveResponse()]) }),
+      })
+      assert.equal(warns(), false)
+      change(page.find('option-42')[0])
+      await flush()
+      assert.equal(warns(), true) // dirty
+      mock.timers.tick(15000)
+      await flush()
+      assert.equal(chip(page).props['data-save'], 'saving')
+      assert.match(textOf(chip(page)), /Đang lưu\.\.\./)
+      assert.equal(warns(), true) // PATCH đang chạy
+      release()
+      await flush()
+      assert.equal(chip(page).props['data-save'], 'saved')
+      assert.equal(warns(), false)
+    })
+  } finally {
+    globalThis.window.addEventListener = addEventListener
+    globalThis.window.removeEventListener = removeEventListener
+  }
+})
+
+test('PLAYER13: a 422 without validation errors locks the inputs with a safe message and no retry button', async () => {
+  await withFakeTimers(async () => {
+    const page = await openAttempt({
+      [`PATCH ${PLAYER}/quiz-attempts/11`]: [422, { message: 'This attempt has already been submitted.', exception: 'HttpException', file: '/var/www/x.php' }],
+    })
+    change(page.find('option-42')[0])
+    await flush()
+    mock.timers.tick(15000)
+    await flush()
+    assert.equal(chip(page).props['data-save'], 'stopped')
+    assert.match(textOf(chip(page)), /Tự động lưu đã dừng/)
+    assert.match(textOf(page.find('save-stopped')[0]), /cần kiểm tra lại trạng thái bài/)
+    assert.match(textOf(page.find('save-stopped')[0]), /chưa được lưu lên máy chủ/)
+    assert.doesNotMatch(page.text(), /already been submitted|HttpException|\/var\/www/)
+    assert.equal(page.find('save-now').length, 0)
+    assert.equal('disabled' in page.find('option-41')[0].props, true)
+    assert.equal('disabled' in page.find('clear')[0].props, true)
+    assert.equal(page.find('option-42')[0].props.checked, true) // đáp án vẫn giữ trên màn hình
+    mock.timers.tick(45000)
+    await flush()
+    assert.equal(patches().length, 1)
+  })
+})
+
+test('PLAYER14: a timed_out autosave response ends the attempt without editable inputs or answers shown', async () => {
+  await withFakeTimers(async () => {
+    const page = await openAttempt({
+      [`PATCH ${PLAYER}/quiz-attempts/11`]: [200, {
+        attempt: { id: 11, status: 'completed', score: 0, total_correct: 0, auto_submitted: true },
+        latest_score: 0,
+        best_score: 50,
+        results: [{ question_id: 21, selected_option_id: null, correct_option_id: 42, is_correct: false, explanation: 'SECRET_EXPLANATION', citations: [] }],
+        timed_out: true,
+      }],
+    })
+    change(page.find('option-41')[0])
+    await flush()
+    mock.timers.tick(15000)
+    await flush()
+    assert.equal(page.find('completed').length, 1)
+    assert.match(textOf(page.find('timed-out')[0]), /tự động nộp bài do hết thời gian/)
+    assert.equal(page.find('attempt').length, 0)
+    assert.equal(page.find('option-41').length, 0)
+    assert.doesNotMatch(page.text(), /SECRET_EXPLANATION/)
+    mock.timers.tick(30000)
+    await flush()
+    assert.equal(patches().length, 1)
+  })
 })

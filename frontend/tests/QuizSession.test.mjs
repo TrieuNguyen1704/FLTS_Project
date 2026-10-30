@@ -12,7 +12,12 @@ function fakeService() {
     return new Promise((resolve, reject) => pending.push({ name, args, resolve, reject }))
   }
   return {
-    service: { show: method('show'), attemptHistory: method('attemptHistory'), startAttempt: method('startAttempt') },
+    service: {
+      show: method('show'),
+      attemptHistory: method('attemptHistory'),
+      startAttempt: method('startAttempt'),
+      saveDraft: method('saveDraft'),
+    },
     calls,
     // Lấy request đang chờ sớm nhất của method; test resolve hoặc reject nó.
     take(name) {
@@ -24,6 +29,42 @@ function fakeService() {
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
+
+// Scheduler giả: không có timer thật; test gọi tick() để mô phỏng một nhịp 15 giây.
+function fakeScheduler() {
+  let nextId = 1
+  const intervals = new Map()
+  const timeouts = new Map()
+  return {
+    intervals,
+    timeouts,
+    setInterval(fn, ms) {
+      const id = nextId++
+      intervals.set(id, { fn, ms })
+      return id
+    },
+    clearInterval(id) {
+      intervals.delete(id)
+    },
+    setTimeout(fn, ms) {
+      const id = nextId++
+      timeouts.set(id, { fn, ms })
+      return id
+    },
+    clearTimeout(id) {
+      timeouts.delete(id)
+    },
+    tick() {
+      for (const { fn } of [...intervals.values()]) fn()
+    },
+    fireTimeouts() {
+      for (const [id, { fn }] of [...timeouts]) {
+        timeouts.delete(id)
+        fn()
+      }
+    },
+  }
+}
 
 const apiError = (status, extra = {}) =>
   new LearningObjectsApiError(
@@ -78,7 +119,8 @@ async function toInProgress(fake, session, draft) {
   await starting
 }
 
-const newSession = (fake) => createQuizSession({ courseId: 3, learningObjectId: 7, service: fake.service })
+const newSession = (fake, scheduler = fakeScheduler()) =>
+  createQuizSession({ courseId: 3, learningObjectId: 7, service: fake.service, scheduler })
 
 test('QS01: loadIntro calls show and history only, never startAttempt', async () => {
   const fake = fakeService()
@@ -390,7 +432,15 @@ test('QS15: a completed attempt from start keeps inputs closed and does not star
   fake.take('startAttempt').resolve(done)
   await starting
   assert.equal(session.state.phase, 'completed')
-  assert.deepEqual({ ...session.state.result }, { score: 50, totalCorrect: 1, timedOut: true })
+  assert.deepEqual(JSON.parse(JSON.stringify(session.state.result)), {
+    score: 50,
+    totalCorrect: 1,
+    autoSubmitted: false,
+    timedOut: true,
+    latestScore: null,
+    bestScore: null,
+    results: [],
+  })
   assert.equal(session.selectAnswer(21, 41), false)
   assert.equal(await session.start(), false)
   assert.equal(fake.calls.filter((c) => c === 'startAttempt').length, 1)
@@ -509,4 +559,369 @@ test('QS22: the exposed state is read-only for callers', async () => {
   assert.equal(session.state.answers[21], null)
   assert.equal(session.state.editSeq, 0)
   assert.equal(session.state.questions.length, 2)
+})
+
+// ---------- Autosave (B3) ----------
+
+const saveOk = (overrides = {}) => ({
+  attempt: { id: 11, status: 'in_progress', draft_answers: [] },
+  server_time: '2026-10-30T07:00:15.000000Z',
+  ...overrides,
+})
+const countOf = (fake, name) => fake.calls.filter((c) => c === name).length
+
+async function autosaveSession(draft) {
+  const fake = fakeService()
+  const scheduler = fakeScheduler()
+  const session = newSession(fake, scheduler)
+  await toInProgress(fake, session, draft)
+  return { fake, scheduler, session }
+}
+
+test('AS01: the scheduler starts once at in_progress and a clean session never sends PATCH', async () => {
+  const fake = fakeService()
+  const scheduler = fakeScheduler()
+  const session = newSession(fake, scheduler)
+  await toIntro(fake, session)
+  assert.equal(scheduler.intervals.size, 0) // chưa vào in_progress
+  const starting = session.start()
+  fake.take('startAttempt').resolve(startResponse())
+  await starting
+  assert.equal(scheduler.intervals.size, 1)
+  assert.equal([...scheduler.intervals.values()][0].ms, 15000)
+  scheduler.tick()
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 0)
+  assert.equal(session.state.save.status, 'idle')
+})
+
+test('AS02: a dirty session sends exactly one PATCH per tick with the full snapshot and a 20s timeout', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  session.selectAnswer(21, 42)
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 1)
+  const request = fake.take('saveDraft')
+  assert.deepEqual(request.args, [
+    3,
+    7,
+    11,
+    { answers: [{ question_id: 21, selected_option_id: 42 }, { question_id: 22, selected_option_id: null }] },
+    { timeout: 20000 },
+  ])
+  assert.equal(typeof request.args[4].timeout, 'number')
+  assert.equal(session.state.save.status, 'saving')
+  assert.equal(session.hasPendingSave(), true)
+
+  // Hai tick khi request còn chờ: vẫn chỉ một PATCH.
+  scheduler.tick()
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 1)
+  request.resolve(saveOk())
+  await settle()
+  assert.equal(session.hasPendingSave(), false)
+})
+
+test('AS03: a 200 marks only the sent snapshot as saved; edits made meanwhile stay dirty and are saved next tick', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  session.selectAnswer(21, 41) // editSeq 1
+  scheduler.tick()
+  const first = fake.take('saveDraft')
+  session.selectAnswer(22, 43) // editSeq 2 khi PATCH đang chạy
+  first.resolve(saveOk())
+  await settle()
+  assert.equal(session.state.savedSeq, 1)
+  assert.equal(session.state.editSeq, 2)
+  assert.equal(session.dirty.value, true)
+  assert.equal(session.state.save.status, 'saved')
+  assert.equal(session.state.save.failures, 0)
+  assert.equal(session.state.save.lastSavedAt, '2026-10-30T07:00:15.000000Z')
+
+  scheduler.tick()
+  const second = fake.take('saveDraft')
+  assert.deepEqual(second.args[3].answers, [
+    { question_id: 21, selected_option_id: 41 },
+    { question_id: 22, selected_option_id: 43 },
+  ])
+  second.resolve(saveOk({ server_time: 'not-a-date' }))
+  await settle()
+  assert.equal(session.state.savedSeq, 2)
+  assert.equal(session.dirty.value, false)
+  assert.equal(session.state.save.lastSavedAt, null) // server_time không hợp lệ thì không hiển thị
+})
+
+test('AS04: server and network failures keep savedSeq, retry on the next tick and stop after three', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  session.selectAnswer(21, 41)
+  for (const [round, err] of [[1, apiError(500)], [2, apiError(0)]]) {
+    scheduler.tick()
+    fake.take('saveDraft').reject(err)
+    await settle()
+    assert.equal(session.state.savedSeq, 0)
+    assert.equal(session.dirty.value, true)
+    assert.equal(session.state.save.status, 'retrying')
+    assert.equal(session.state.save.failures, round)
+  }
+  scheduler.tick()
+  fake.take('saveDraft').reject(apiError(503))
+  await settle()
+  assert.equal(session.state.save.status, 'stopped')
+  assert.equal(session.state.save.reason, 'network')
+  assert.equal(scheduler.intervals.size, 0)
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 3) // không có request vô hạn
+  assert.equal(session.state.savedSeq, 0)
+  assert.equal(session.canEdit.value, true) // lỗi mạng không khóa chỉnh sửa
+})
+
+test('AS05: a timeout is treated as unknown, keeps dirty and skips exactly one tick (cooldown)', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  session.selectAnswer(21, 41)
+  scheduler.tick()
+  fake.take('saveDraft').reject(apiError(0, { code: 'ECONNABORTED' }))
+  await settle()
+  assert.equal(session.state.save.status, 'retrying')
+  assert.equal(session.state.save.failures, 1)
+  assert.equal(session.state.savedSeq, 0)
+  assert.equal(session.dirty.value, true)
+
+  scheduler.tick() // cooldown
+  assert.equal(countOf(fake, 'saveDraft'), 1)
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 2)
+  fake.take('saveDraft').resolve(saveOk())
+  await settle()
+  assert.equal(session.state.save.status, 'saved')
+  assert.equal(session.state.save.failures, 0)
+})
+
+test('AS06: "save now" retries recoverable failures only and restarts the scheduler', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  assert.equal(await session.saveNow(), false) // không có lỗi: không có gì để retry
+  session.selectAnswer(21, 41)
+  assert.equal(await session.saveNow(), false) // chỉ dirty, chưa lỗi: để tick xử lý
+  for (let i = 0; i < 3; i++) {
+    scheduler.tick()
+    fake.take('saveDraft').reject(apiError(0, { code: 'ECONNABORTED' }))
+    await settle()
+    scheduler.tick() // cooldown
+  }
+  assert.equal(session.state.save.reason, 'network')
+  assert.equal(scheduler.intervals.size, 0)
+
+  const saving = session.saveNow()
+  assert.equal(session.saveNow(), saving) // bấm liền hai lần: một request
+  assert.equal(countOf(fake, 'saveDraft'), 4)
+  assert.equal(scheduler.intervals.size, 1)
+  fake.take('saveDraft').resolve(saveOk())
+  assert.equal(await saving, true)
+  assert.equal(session.state.save.status, 'saved')
+  assert.equal(session.state.save.reason, null)
+
+  // Đang retrying (chưa tới 3 lần) cũng cho lưu ngay.
+  session.selectAnswer(21, 42)
+  scheduler.tick()
+  fake.take('saveDraft').reject(apiError(500))
+  await settle()
+  assert.equal(session.state.save.status, 'retrying')
+  const again = session.saveNow()
+  fake.take('saveDraft').resolve(saveOk())
+  assert.equal(await again, true)
+})
+
+test('AS07: 422 with errors, 422 without errors and 409 stop autosave without a manual retry', async () => {
+  const cases = [
+    [apiError(422, { errors: { 'answers.0.question_id': ['bad'] } }), 'invalid_data', true],
+    [apiError(422), 'needs_verification', false],
+    [apiError(409), 'conflict', false],
+  ]
+  for (const [err, reason, editable] of cases) {
+    const { fake, scheduler, session } = await autosaveSession([{ question_id: 22, selected_option_id: 43 }])
+    session.selectAnswer(21, 41)
+    scheduler.tick()
+    fake.take('saveDraft').reject(err)
+    await settle()
+    assert.equal(session.state.save.status, 'stopped', reason)
+    assert.equal(session.state.save.reason, reason)
+    assert.equal(session.state.phase, 'in_progress')
+    assert.equal(scheduler.intervals.size, 0)
+    assert.equal(await session.saveNow(), false)
+    scheduler.tick()
+    assert.equal(countOf(fake, 'saveDraft'), 1)
+    assert.equal(session.canEdit.value, editable)
+    assert.equal(session.selectAnswer(21, 42), editable)
+    // Đáp án vẫn giữ trong bộ nhớ dù bị khóa.
+    assert.equal(session.state.answers[22], 43)
+    assert.equal(session.state.savedSeq, 0)
+    assert.equal(JSON.stringify(session.state).includes('SECRET backend message'), false)
+  }
+})
+
+test('AS08: a timed_out or completed PATCH response ends the attempt and stops the scheduler', async () => {
+  for (const response of [
+    { attempt: { id: 11, status: 'completed', score: 50, total_correct: 1, auto_submitted: true }, latest_score: 50, best_score: 75, results: [{ question_id: 21, selected_option_id: 41, correct_option_id: 42, is_correct: false, explanation: 'x', citations: [{ document_name: 'doc.pdf', source_locator: 'page 9', vector_id: 'v' }] }], timed_out: true },
+    { attempt: { id: 11, status: 'completed', score: 100, total_correct: 2 } },
+  ]) {
+    const { fake, scheduler, session } = await autosaveSession()
+    session.selectAnswer(21, 41)
+    scheduler.tick()
+    fake.take('saveDraft').resolve(response)
+    await settle()
+    assert.equal(session.state.phase, 'completed')
+    assert.equal(scheduler.intervals.size, 0)
+    assert.equal(session.state.savedSeq, 0) // không đi qua nhánh 200 thông thường
+    assert.equal(session.selectAnswer(21, 42), false)
+    assert.equal(session.state.result.timedOut, response.timed_out === true)
+    assert.equal(session.state.result.score, response.attempt.score)
+  }
+})
+
+test('AS09: 403/404 are fatal, 401 stops autosave, other errors stop as client errors', async () => {
+  for (const status of [403, 404]) {
+    const { fake, scheduler, session } = await autosaveSession()
+    session.selectAnswer(21, 41)
+    scheduler.tick()
+    fake.take('saveDraft').reject(apiError(status))
+    await settle()
+    assert.equal(session.state.phase, 'fatal_error')
+    assert.equal(session.state.error.retry, null)
+    assert.equal(scheduler.intervals.size, 0)
+  }
+  let { fake, scheduler, session } = await autosaveSession()
+  session.selectAnswer(21, 41)
+  scheduler.tick()
+  fake.take('saveDraft').reject(apiError(401))
+  await settle()
+  assert.equal(session.state.save.reason, 'unauthorized')
+  assert.equal(scheduler.intervals.size, 0)
+  ;({ fake, scheduler, session } = await autosaveSession())
+  session.selectAnswer(21, 41)
+  scheduler.tick()
+  fake.take('saveDraft').reject(new Error('unexpected'))
+  await settle()
+  assert.equal(session.state.save.reason, 'client_error')
+})
+
+test('AS10: invalid or mismatched PATCH responses stop autosave without marking anything saved', async () => {
+  for (const response of [null, {}, { attempt: { id: 99, status: 'in_progress' } }, { attempt: { id: 11, status: 'abandoned' } }]) {
+    const { fake, scheduler, session } = await autosaveSession()
+    session.selectAnswer(21, 41)
+    scheduler.tick()
+    fake.take('saveDraft').resolve(response)
+    await settle()
+    assert.equal(session.state.save.reason, 'invalid_response', JSON.stringify(response))
+    assert.equal(session.state.savedSeq, 0)
+    assert.equal(session.state.phase, 'in_progress')
+  }
+})
+
+test('AS11: a cancelled PATCH is neither a success nor a failure', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  session.selectAnswer(21, 41)
+  scheduler.tick()
+  fake.take('saveDraft').reject(apiError(0, { code: 'ERR_CANCELED', canceled: true }))
+  await settle()
+  assert.equal(session.state.savedSeq, 0)
+  assert.equal(session.state.save.failures, 0)
+  assert.equal(session.state.save.status, 'idle')
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 2) // tick sau thử lại bình thường, không vòng lặp tức thì
+})
+
+test('AS12: dispose clears the interval and late PATCH results (success or failure) are ignored', async () => {
+  for (const settleWith of ['resolve', 'reject']) {
+    const { fake, scheduler, session } = await autosaveSession()
+    session.selectAnswer(21, 41)
+    scheduler.tick()
+    const request = fake.take('saveDraft')
+    session.dispose()
+    assert.equal(scheduler.intervals.size, 0)
+    assert.equal(session.hasPendingSave(), false)
+    if (settleWith === 'resolve') request.resolve(saveOk())
+    else request.reject(apiError(0))
+    await settle()
+    assert.equal(session.state.phase, 'disposed')
+    assert.equal(session.state.savedSeq, 0)
+    assert.equal(session.state.save.failures, 0)
+    assert.equal(session.state.save.lastSavedAt, null)
+    scheduler.tick()
+    assert.equal(countOf(fake, 'saveDraft'), 1)
+  }
+})
+
+test('AS13: a remounted player gets one fresh scheduler and the old one stays cleared', async () => {
+  const fake = fakeService()
+  const scheduler = fakeScheduler()
+  const first = newSession(fake, scheduler)
+  await toInProgress(fake, first)
+  assert.equal(scheduler.intervals.size, 1)
+  first.dispose()
+  assert.equal(scheduler.intervals.size, 0)
+
+  const second = newSession(fake, scheduler)
+  await toIntro(fake, second)
+  const starting = second.start()
+  fake.take('startAttempt').resolve(startResponse())
+  await starting
+  assert.equal(scheduler.intervals.size, 1)
+  second.selectAnswer(21, 41)
+  scheduler.tick()
+  assert.equal(countOf(fake, 'saveDraft'), 1)
+})
+
+test('AS14: stopAutosave and awaitPendingSave let a submit wait for a pending PATCH without hanging', async () => {
+  const { fake, scheduler, session } = await autosaveSession()
+  assert.equal(await session.awaitPendingSave(), true) // không có PATCH đang chạy
+
+  session.selectAnswer(21, 41)
+  scheduler.tick()
+  const request = fake.take('saveDraft')
+  session.stopAutosave()
+  assert.equal(scheduler.intervals.size, 0)
+  session.selectAnswer(21, 42)
+  scheduler.tick()
+  assert.equal(await session.saveNow(), false)
+  assert.equal(countOf(fake, 'saveDraft'), 1) // không có PATCH mới sau stopAutosave
+
+  const waiting = session.awaitPendingSave(25000)
+  assert.equal([...scheduler.timeouts.values()][0].ms, 25000)
+  request.resolve(saveOk())
+  assert.equal(await waiting, true)
+  assert.equal(session.state.savedSeq, 1) // PATCH đang chạy vẫn được ghi nhận
+  assert.equal(scheduler.timeouts.size, 0)
+  assert.deepEqual(session.snapshot().answers[0], { question_id: 21, selected_option_id: 42 })
+
+  // PATCH treo: hết hạn chờ thì trả false, không chặn vĩnh viễn.
+  const hung = await autosaveSession()
+  hung.session.selectAnswer(21, 41)
+  hung.scheduler.tick()
+  hung.fake.take('saveDraft')
+  hung.session.stopAutosave()
+  const timedWait = hung.session.awaitPendingSave(1000)
+  hung.scheduler.fireTimeouts()
+  assert.equal(await timedWait, false)
+
+  // Dispose giải phóng mọi lời chờ.
+  const disposed = await autosaveSession()
+  disposed.session.selectAnswer(21, 41)
+  disposed.scheduler.tick()
+  disposed.fake.take('saveDraft')
+  const pendingWait = disposed.session.awaitPendingSave(1000)
+  disposed.session.dispose()
+  assert.equal(await pendingWait, false)
+  assert.equal(disposed.scheduler.timeouts.size, 0)
+})
+
+test('AS15: autosave never calls startAttempt, whatever the PATCH outcome', async () => {
+  for (const outcome of [saveOk(), apiError(0), apiError(422), apiError(409), apiError(500), { attempt: { id: 11, status: 'completed' }, timed_out: true }]) {
+    const { fake, scheduler, session } = await autosaveSession()
+    session.selectAnswer(21, 41)
+    scheduler.tick()
+    const request = fake.take('saveDraft')
+    if (outcome instanceof Error) request.reject(outcome)
+    else request.resolve(outcome)
+    await settle()
+    scheduler.tick()
+    await settle()
+    assert.equal(countOf(fake, 'startAttempt'), 1)
+  }
 })

@@ -4,13 +4,34 @@ import { RouterLink, useRoute } from 'vue-router'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
 import { createQuizSession } from '@/quiz/quizSession'
 
-// S3-H04B2: intro, start/resume và chọn đáp án. startAttempt chỉ chạy khi sinh viên bấm nút:
-// mỗi lần start khi không còn bài dở sẽ tạo một lượt làm mới. Chưa có autosave/timer/submit (B3–B5).
+// S3-H04B2/B3: intro, start/resume, chọn đáp án và autosave 15 giây. startAttempt chỉ chạy khi sinh viên bấm nút:
+// mỗi lần start khi không còn bài dở sẽ tạo một lượt làm mới. Chưa có timer/submit (B4–B5).
 const route = useRoute()
 const session = shallowRef(null)
 
 const state = computed(() => session.value?.state)
 const currentQuestion = computed(() => state.value?.questions[state.value.currentIndex] ?? null)
+const canEdit = computed(() => session.value?.canEdit.value === true)
+
+// Chip trạng thái lưu: chỉ báo "Đã lưu" khi server đã xác nhận đúng bản nháp hiện tại.
+const saveChip = computed(() => {
+  const save = state.value?.save
+  if (!save) return null
+  if (save.status === 'saving') return { key: 'saving', label: 'Đang lưu...', tone: 'text-indigo-700 bg-indigo-50 border-indigo-200' }
+  if (save.status === 'stopped') return { key: 'stopped', label: 'Tự động lưu đã dừng', tone: 'text-red-700 bg-red-50 border-red-200' }
+  if (save.status === 'retrying') return { key: 'retrying', label: 'Lưu thất bại, sẽ thử lại', tone: 'text-amber-800 bg-amber-50 border-amber-200' }
+  if (session.value.dirty.value) return { key: 'dirty', label: 'Chưa lưu', tone: 'text-amber-800 bg-amber-50 border-amber-200' }
+  if (save.status === 'saved') return { key: 'saved', label: 'Đã lưu', tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' }
+  return { key: 'clean', label: 'Chưa có thay đổi', tone: 'text-slate-600 bg-slate-50 border-slate-200' }
+})
+const lastSavedLabel = computed(() => {
+  const value = state.value?.save.lastSavedAt
+  return value ? new Date(value).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''
+})
+const canSaveNow = computed(() => {
+  const save = state.value?.save
+  return canEdit.value && (save?.status === 'retrying' || (save?.status === 'stopped' && save.reason === 'network'))
+})
 
 function openSession(courseId, learningObjectId) {
   session.value?.dispose()
@@ -23,9 +44,9 @@ function retry() {
   else if (state.value?.error?.retry === 'start') session.value.start()
 }
 
-// Câu trả lời chưa được lưu lên server trong B2: cảnh báo khi đóng/tải lại tab.
+// Cảnh báo khi đóng/tải lại tab nếu còn thay đổi chưa được server xác nhận hoặc PATCH đang chạy.
 function warnBeforeUnload(event) {
-  if (state.value?.phase === 'in_progress' && session.value.dirty.value) {
+  if (state.value?.phase === 'in_progress' && (session.value.dirty.value || session.value.hasPendingSave())) {
     event.preventDefault()
     event.returnValue = ''
   }
@@ -136,15 +157,29 @@ onBeforeUnmount(() => {
 
       <div v-else-if="state.phase === 'completed'" class="bg-white rounded-2xl border border-slate-200/80 p-6" data-test="completed">
         <p class="text-sm text-slate-700">Bài làm này đã kết thúc.</p>
+        <p v-if="state.result?.timedOut" class="mt-1 text-sm text-amber-800" data-test="timed-out">
+          Máy chủ đã tự động nộp bài do hết thời gian làm bài.
+        </p>
         <p v-if="state.result?.score !== null && state.result?.score !== undefined" class="mt-1 text-sm text-slate-700">
           Điểm: <strong>{{ state.result.score }}%</strong>
         </p>
       </div>
 
       <template v-else-if="state.phase === 'in_progress'">
-        <div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800" data-test="unsaved-notice">
-          Tính năng lưu tự động sẽ được bổ sung ở bước tiếp theo; câu trả lời hiện chưa được lưu lên máy chủ.
-          Nếu rời hoặc tải lại trang, các lựa chọn vừa thay đổi sẽ bị mất.
+        <div
+          v-if="state.save.status === 'stopped' && state.save.message"
+          class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+          data-test="save-stopped"
+        >
+          {{ state.save.message }}
+          <span v-if="session.dirty.value"> Các lựa chọn gần nhất mới chỉ nằm trên trình duyệt này, chưa được lưu lên máy chủ.</span>
+        </div>
+        <div
+          v-else-if="state.save.status === 'retrying'"
+          class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+          data-test="save-retrying"
+        >
+          Chưa lưu được câu trả lời lên máy chủ. Hệ thống sẽ thử lại sau ít giây; bạn có thể bấm "Lưu ngay".
         </div>
         <p v-if="state.ignoredDraftCount > 0" class="text-xs text-amber-700" data-test="ignored-draft">
           Một số câu trả lời đã lưu không còn khớp với đề hiện tại và đã được bỏ qua.
@@ -156,6 +191,22 @@ onBeforeUnmount(() => {
             <span class="text-sm text-slate-600" data-test="progress">
               Đã trả lời {{ session.answeredCount.value }}/{{ state.questions.length }} câu
             </span>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-3 text-xs">
+            <span :class="['px-2.5 py-1 rounded-full border font-semibold', saveChip.tone]" :data-save="saveChip.key" data-test="save-chip">
+              {{ saveChip.label }}
+            </span>
+            <span v-if="lastSavedLabel" class="text-slate-500" data-test="last-saved">Lần lưu gần nhất: {{ lastSavedLabel }}</span>
+            <button
+              v-if="canSaveNow"
+              type="button"
+              class="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition-colors"
+              data-test="save-now"
+              @click="session.saveNow()"
+            >
+              Lưu ngay
+            </button>
           </div>
 
           <nav class="flex flex-wrap gap-2" aria-label="Danh sách câu hỏi" data-test="question-nav">
@@ -194,6 +245,7 @@ onBeforeUnmount(() => {
                   :name="`question-${currentQuestion.id}`"
                   :value="option.id"
                   :checked="state.answers[currentQuestion.id] === option.id"
+                  :disabled="!canEdit"
                   :data-test="`option-${option.id}`"
                   @change="session.selectAnswer(currentQuestion.id, option.id)"
                 />
@@ -202,7 +254,7 @@ onBeforeUnmount(() => {
             </div>
             <button
               type="button"
-              :disabled="state.answers[currentQuestion.id] === null"
+              :disabled="!canEdit || state.answers[currentQuestion.id] === null"
               class="mt-3 text-xs font-semibold text-slate-500 hover:text-slate-700"
               data-test="clear"
               @click="session.clearAnswer(currentQuestion.id)"
