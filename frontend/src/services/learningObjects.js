@@ -169,6 +169,21 @@ export const learningObjects = {
     sendGenerator(() =>
       api.post(`${objectPath(courseId, learningObjectId)}/generation-runs/retry`, undefined, { timeout: 20000 }),
     ),
+
+  // --- Quiz Editor (Giảng viên) — FAST-05. Danh sách dùng list(), chi tiết dùng show(). ---
+
+  // payload thay toàn bộ nội dung: { title, description, time_limit_minutes, passing_score,
+  // questions: [{ question_text, explanation, options: string[4], correct_index, citations }] }.
+  // Mỗi lần lưu tạo version mới (change_type edited); response 200 { learning_object }.
+  updateQuiz: (courseId, learningObjectId, payload) =>
+    sendEditor(() => api.patch(objectPath(courseId, learningObjectId), payload, { timeout: 20000 })),
+
+  // Xuất bản version mới nhất; backend không có endpoint gỡ xuất bản (chỉ archive).
+  publish: (courseId, learningObjectId) =>
+    sendEditor(() => api.post(`${objectPath(courseId, learningObjectId)}/publish`, undefined, { timeout: 20000 })),
+
+  archive: (courseId, learningObjectId) =>
+    sendEditor(() => api.post(`${objectPath(courseId, learningObjectId)}/archive`, undefined, { timeout: 20000 })),
 }
 
 // Thông báo cho luồng tạo Quiz: khác DEFAULT_MESSAGES (viết cho bài làm của sinh viên) và có thêm 429/503/timeout.
@@ -193,15 +208,35 @@ const KNOWN_SERVER_MESSAGES = {
   'Source preview is temporarily unavailable.':
     'Chưa kiểm tra được nguồn: không tìm thấy nội dung phù hợp hoặc dịch vụ đang tạm ngưng.',
   'The source check is temporarily rate limited. Please retry shortly.': GENERATOR_MESSAGES[429],
+  // LearningObjectController@update/publish/archive
+  'Create or restore a draft version before editing.':
+    'Quiz đã xuất bản nên không sửa trực tiếp được. Cần tạo phiên bản nháp mới (chưa hỗ trợ ở bước này).',
+  'This version is already published.': 'Phiên bản này đã được xuất bản.',
+  'Archived learning objects cannot be published.': 'Quiz đã lưu trữ không thể xuất bản.',
+  'This learning object is already archived.': 'Quiz này đã được lưu trữ.',
+  'A published quiz requires at least three questions.': 'Quiz cần ít nhất 3 câu hỏi để xuất bản.',
+  'Every question requires four options and one correct answer.': 'Mỗi câu cần đúng 4 lựa chọn và 1 đáp án đúng.',
+  'Every published question requires an explanation and grounded citation.':
+    'Mỗi câu cần có giải thích và trích dẫn nguồn để xuất bản.',
 }
 
-async function sendGenerator(request) {
+const EDITOR_MESSAGES = {
+  ...GENERATOR_MESSAGES,
+  403: 'Bạn không có quyền chỉnh sửa quiz này.',
+  404: 'Không tìm thấy quiz.',
+  409: 'Quiz đang được tạo hoặc đang bị khóa, thử lại sau.',
+}
+
+async function sendMapped(request, statusMessages) {
   try {
     return await send(request)
   } catch (err) {
     if (!(err instanceof LearningObjectsApiError) || err.canceled) throw err
     if (err.status === 0 && TIMEOUT_CODES.has(err.code)) err.message = TIMEOUT_MESSAGE
-    else err.message = KNOWN_SERVER_MESSAGES[err.serverMessage] || GENERATOR_MESSAGES[err.status] || err.message
+    else err.message = KNOWN_SERVER_MESSAGES[err.serverMessage] || statusMessages[err.status] || err.message
     throw err
   }
 }
+
+const sendGenerator = (request) => sendMapped(request, GENERATOR_MESSAGES)
+const sendEditor = (request) => sendMapped(request, EDITOR_MESSAGES)

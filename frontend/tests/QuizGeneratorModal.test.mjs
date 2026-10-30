@@ -74,12 +74,13 @@ const bodyOf = (config) => JSON.parse(config.data)
 
 function mountModal({ show = true } = {}) {
   const visible = ref(show)
-  const events = { created: [], close: 0 }
+  const events = { created: [], edit: [], close: 0 }
   const Root = defineComponent({
     render: () => h(QuizGeneratorModal, {
       show: visible.value,
       courseId: 3,
       onCreated: (id) => events.created.push(id),
+      onEdit: (id) => events.edit.push(id),
       onClose: () => { events.close++; visible.value = false },
     }),
   })
@@ -409,6 +410,9 @@ test('modal: 202 trả ngay completed (gửi lại cùng request_id) thì không
   assert.equal(m.find('phase-completed').length, 1)
   assert.deepEqual(m.events.created, [7])
   assert.equal(requestsTo(SHOW).length, 0)
+
+  await click(one(m, 'edit-button')) // "Mở trình chỉnh sửa" báo id cho màn cha điều hướng
+  assert.deepEqual(m.events.edit, [7])
 })
 
 function textOfNode(node) {

@@ -25,7 +25,7 @@ const props = defineProps({
   show: { type: Boolean, default: false },
   courseId: { type: [Number, String], required: true },
 })
-const emit = defineEmits(['close', 'created'])
+const emit = defineEmits(['close', 'created', 'edit'])
 
 const DOCUMENT_STATUS_LABELS = {
   processed: 'Đã xử lý',
@@ -562,7 +562,7 @@ function closeNow() {
       <p data-test="completed-summary" class="text-slate-700">
         {{ learningObject?.title }}<template v-if="totalQuestions !== null"> — {{ totalQuestions }} câu hỏi</template>
       </p>
-      <p class="text-xs text-slate-500">Quiz đang ở trạng thái nháp, sinh viên chưa thấy. Chỉnh sửa và xuất bản ở bước tiếp theo.</p>
+      <p class="text-xs text-slate-500">Quiz đang ở trạng thái nháp, sinh viên chưa thấy. Mở trình chỉnh sửa để rà soát và xuất bản.</p>
     </div>
 
     <!-- ===== FAILED ===== -->
@@ -595,7 +595,8 @@ function closeNow() {
         </button>
       </template>
       <template v-else-if="phase === 'completed'">
-        <button type="button" data-test="close-button" class="px-4 py-2 rounded-xl bg-indigo-600 text-sm font-medium text-white" @click="closeNow">Đóng</button>
+        <button type="button" data-test="edit-button" class="px-4 py-2 rounded-xl bg-indigo-600 text-sm font-medium text-white" @click="emit('edit', learningObject.id)">Mở trình chỉnh sửa</button>
+        <button type="button" data-test="close-button" class="px-4 py-2 rounded-xl border border-slate-200 text-sm" @click="closeNow">Đóng</button>
         <button type="button" data-test="another-button" class="px-4 py-2 rounded-xl border border-slate-200 text-sm" @click="startAnother">Tạo Quiz khác</button>
       </template>
       <template v-else-if="phase === 'failed'">

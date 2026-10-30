@@ -6,6 +6,7 @@ import StatusBadge from '@/components/StatusBadge.vue'
 import FileDropzone from '@/components/FileDropzone.vue'
 import AppModal from '@/components/AppModal.vue'
 import QuizGeneratorModal from '@/views/QuizGeneratorModal.vue'
+import CourseQuizList from '@/components/CourseQuizList.vue'
 import { courseDocuments } from '@/services/courseDocuments'
 import { useAuthStore } from '@/stores/auth'
 
@@ -39,9 +40,19 @@ const deletingDocument = ref(false)
 
 // Sprint 3: modal tạo Quiz bằng AI (tự tải danh sách tài liệu thật, không dùng dữ liệu mẫu)
 const showQuizGenerator = ref(false)
+const quizListKey = ref(0)
 
 function handleQuizCreated(learningObjectId) {
-  successMessage.value = `Đã tạo Quiz nháp #${learningObjectId}. Chỉnh sửa và xuất bản ở bước tiếp theo.`
+  successMessage.value = `Đã tạo Quiz nháp #${learningObjectId}. Mở "Chỉnh sửa" trong mục Quiz của khóa học để xuất bản.`
+  quizListKey.value++
+}
+
+function openQuizEditor(learningObjectId) {
+  showQuizGenerator.value = false
+  router.push({
+    name: 'lecturer-quiz-edit',
+    params: { courseId: String(selectedCourse.value.id), learningObjectId: String(learningObjectId) },
+  })
 }
 
 // State tab giao diện: 'documents' (Tài liệu) hoặc 'workbench' (RAG Workbench)
@@ -942,6 +953,13 @@ function setTab(tab) {
             </div>
           </div>
         </div>
+
+        <!-- Sprint 3: Quiz của khóa học (API thật, không dùng dữ liệu mẫu) -->
+        <CourseQuizList
+          v-if="authStore.isLecturer && selectedCourse"
+          :course-id="selectedCourse.id"
+          :refresh-key="quizListKey"
+        />
       </div>
 
       <!-- ================= TAB 2: RAG WORKBENCH ================= -->
@@ -1155,6 +1173,7 @@ function setTab(tab) {
       :course-id="selectedCourse.id"
       @close="showQuizGenerator = false"
       @created="handleQuizCreated"
+      @edit="openQuizEditor"
     />
 
     <!-- Modal xác nhận xóa tài liệu -->

@@ -17,6 +17,13 @@ const router = createRouter({
       component: () => import('../views/CourseWorkspaceView.vue'),
       meta: { requiresAuth: true, role: 'lecturer' },
     },
+    // Sprint 3: trình chỉnh sửa Quiz của Giảng viên (FAST-05)
+    {
+      path: '/lecturer/courses/:courseId/quizzes/:learningObjectId/edit',
+      name: 'lecturer-quiz-edit',
+      component: () => import('@/views/QuizEditorView.vue'),
+      meta: { requiresAuth: true, role: 'lecturer' },
+    },
     {
       path: '/',
       name: 'home',
