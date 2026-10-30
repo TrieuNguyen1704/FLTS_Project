@@ -522,3 +522,122 @@ test('TC23: HTTP 5xx drops the whole body, including stack trace and technical m
     })
   }
 })
+
+// So sánh header thật gửi tới adapter (AxiosHeaders → object thường).
+const sentHeaders = (config) => JSON.parse(JSON.stringify(config.headers))
+
+test('TC24: saveDraft with four arguments behaves as before (no per-request timeout)', async () => {
+  respond(200, { attempt: inProgress.attempt, server_time: inProgress.server_time })
+  await learningObjects.saveDraft(3, 7, 11, payload)
+  await learningObjects.saveDraft(3, 7, 11, payload, undefined)
+  await learningObjects.saveDraft(3, 7, 11, payload, {})
+  await learningObjects.saveDraft(3, 7, 11, payload, { timeout: undefined })
+  for (const config of calls) {
+    assert.equal(config.method, 'patch')
+    assert.equal(sentUrl(config), `${B}/quiz-attempts/11`)
+    assert.deepEqual(sentBody(config), payload)
+    assert.equal(config.timeout, api.defaults.timeout) // giữ mặc định của instance (0)
+  }
+  assert.equal(api.defaults.timeout, 0)
+})
+
+test('TC25: saveDraft forwards { timeout } to the adapter without changing body, headers or URL', async () => {
+  respond(200, { attempt: inProgress.attempt, server_time: inProgress.server_time })
+  await learningObjects.saveDraft(3, 7, 11, payload)
+  await learningObjects.saveDraft(3, 7, 11, payload, { timeout: 20000 })
+  const [plain, timed] = calls
+  assert.equal(timed.timeout, 20000)
+  assert.equal(timed.method, 'patch')
+  assert.equal(sentUrl(timed), sentUrl(plain))
+  assert.equal(timed.baseURL, plain.baseURL)
+  assert.deepEqual(sentBody(timed), payload)
+  assert.deepEqual(sentHeaders(timed), sentHeaders(plain))
+  assert.equal(timed.headers.Authorization, 'Bearer test-token')
+  // Timeout chỉ áp dụng cho request đó, không đổi cấu hình dùng chung.
+  assert.equal(api.defaults.timeout, 0)
+})
+
+test('TC26: invalid options or timeout values are rejected before any request is sent', async () => {
+  respond(200, { attempt: inProgress.attempt, server_time: inProgress.server_time })
+  const invalid = [
+    null,
+    'fast',
+    20000,
+    [20000],
+    { timeout: '20000' },
+    { timeout: 0 },
+    { timeout: -1 },
+    { timeout: 1.5 },
+    { timeout: NaN },
+    { timeout: Infinity },
+    { timeout: 2 ** 53 },
+    { timeout: null },
+    { headers: { Authorization: 'Bearer other' } },
+    { url: '/admin' },
+    { baseURL: 'http://evil.test' },
+    { method: 'delete' },
+    { data: { answers: [] } },
+    { timeout: 20000, headers: { 'X-Test': '1' } },
+  ]
+  for (const options of invalid) {
+    await assert.rejects(learningObjects.saveDraft(3, 7, 11, payload, options), TypeError, JSON.stringify(options) ?? String(options))
+  }
+  assert.equal(calls.length, 0)
+})
+
+test('TC27: a saveDraft timeout is normalised to ECONNABORTED/status 0 and is not retried', async () => {
+  api.defaults.adapter = async (config) => {
+    calls.push(config)
+    throw new AxiosError(`timeout of ${config.timeout}ms exceeded`, AxiosError.ECONNABORTED, config, {})
+  }
+  await assert.rejects(learningObjects.saveDraft(3, 7, 11, payload, { timeout: 20000 }), (err) => {
+    assert.ok(err instanceof LearningObjectsApiError)
+    assert.equal(err.status, 0)
+    assert.equal(err.code, 'ECONNABORTED')
+    assert.equal(err.canceled, false)
+    assert.equal(err.data, null)
+    assert.equal(err.serverMessage, null)
+    assert.equal(err.message, 'Không thể kết nối tới máy chủ.')
+    assert.equal(containsDeep(err, 'test-token'), false)
+    return true
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].timeout, 20000)
+  // Không có request nào khác, đặc biệt không có POST startAttempt.
+  assert.deepEqual(calls.map((c) => [c.method, sentUrl(c)]), [['patch', `${B}/quiz-attempts/11`]])
+})
+
+test('TC28: saveDraft errors never trigger startAttempt or any other request', async () => {
+  for (const [status, body] of [
+    [422, { message: 'This attempt has already been submitted.' }],
+    [500, { message: 'Server Error' }],
+    [404, {}],
+  ]) {
+    calls = []
+    respond(status, body)
+    await assert.rejects(learningObjects.saveDraft(3, 7, 11, payload, { timeout: 20000 }), { status })
+    assert.deepEqual(calls.map((c) => c.method), ['patch'])
+  }
+})
+
+test('TC29: the other six endpoints keep their behaviour and ignore an extra argument', async () => {
+  respond(200, {})
+  await learningObjects.list(3, { timeout: 1 })
+  await learningObjects.show(3, 7, { timeout: 1 })
+  await learningObjects.startAttempt(3, 7, { timeout: 1 })
+  await learningObjects.submitAttempt(3, 7, 11, payload, { timeout: 1 })
+  await learningObjects.attemptHistory(3, 7)
+  await learningObjects.quizResults(3, 7)
+  await learningObjects.attemptResult(3, 7, 55, { timeout: 1 })
+  assert.deepEqual(calls.map((c) => [c.method, sentUrl(c), c.timeout]), [
+    ['get', '/api/courses/3/learning-objects', 0],
+    ['get', B, 0],
+    ['post', `${B}/quiz-attempts`, 0],
+    ['post', `${B}/quiz-attempts/11/submit`, 0],
+    ['get', `${B}/quiz-attempts`, 0],
+    ['get', `${B}/quiz-results`, 0],
+    ['get', `${B}/quiz-results/attempts/55`, 0],
+  ])
+  assert.deepEqual(sentBody(calls[3]), payload)
+})

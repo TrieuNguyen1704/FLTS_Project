@@ -69,6 +69,23 @@ const collectionPath = (courseId) => `/courses/${routeId(courseId, 'courseId')}/
 const objectPath = (courseId, learningObjectId) =>
   `${collectionPath(courseId)}/${routeId(learningObjectId, 'learningObjectId')}`
 
+// Option tùy chọn của saveDraft: chỉ nhận timeout (ms). Không cho caller truyền headers/url/baseURL
+// hay config axios khác; giá trị sai bị từ chối trước khi gửi, không tự ép kiểu chuỗi sang số.
+// Timeout phía client không có nghĩa server chưa ghi draft: session phải coi kết quả là chưa xác định.
+function saveDraftConfig(options) {
+  if (options === undefined) return undefined
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('options phải là object.')
+  }
+  const unknownKeys = Object.keys(options).filter((key) => key !== 'timeout')
+  if (unknownKeys.length > 0) throw new TypeError(`options không hỗ trợ: ${unknownKeys.join(', ')}.`)
+  if (options.timeout === undefined) return undefined
+  if (!Number.isSafeInteger(options.timeout) || options.timeout < 1) {
+    throw new TypeError('timeout phải là số nguyên dương (ms).')
+  }
+  return { timeout: options.timeout }
+}
+
 // FLTS không phân trang; chỉ gửi page khi caller truyền để tương thích backend có phân trang.
 const pageConfig = (page) => (page === undefined ? undefined : { params: { page } })
 
@@ -93,8 +110,15 @@ export const learningObjects = {
 
   // payload: { answers: [{ question_id, selected_option_id | null }] } — toàn bộ bản nháp, gửi nguyên như caller truyền.
   // Có thể trả 200 với attempt.status = 'completed' và timed_out = true nếu đã hết giờ.
-  saveDraft: (courseId, learningObjectId, attemptId, payload) =>
-    send(() => api.patch(`${objectPath(courseId, learningObjectId)}/quiz-attempts/${routeId(attemptId, 'attemptId')}`, payload)),
+  // options (tùy chọn): { timeout } tính bằng ms, ví dụ autosave dùng { timeout: 20000 }.
+  saveDraft: (courseId, learningObjectId, attemptId, payload, options) =>
+    send(() =>
+      api.patch(
+        `${objectPath(courseId, learningObjectId)}/quiz-attempts/${routeId(attemptId, 'attemptId')}`,
+        payload,
+        saveDraftConfig(options),
+      ),
+    ),
 
   // payload: { answers } phải đủ mọi câu (câu bỏ trống gửi selected_option_id: null), nếu không backend trả 422.
   submitAttempt: (courseId, learningObjectId, attemptId, payload) =>
