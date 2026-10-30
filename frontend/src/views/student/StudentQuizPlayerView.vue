@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { RouterLink, useRoute } from 'vue-router'
 import AppModal from '@/components/AppModal.vue'
 import DashboardLayout from '@/layouts/DashboardLayout.vue'
+import MathText from '@/components/MathText.vue'
 import { createQuizSession } from '@/quiz/quizSession'
 import { formatRemaining } from '@/quiz/quizClock'
 
@@ -167,7 +168,7 @@ onBeforeUnmount(() => {
         class="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-6"
         data-test="quiz-info"
       >
-        <h1 class="text-2xl font-bold text-slate-900">{{ state.quiz.title }}</h1>
+        <h1 class="text-2xl font-bold text-slate-900"><MathText :text="state.quiz.title" /></h1>
         <p v-if="state.quiz.description" class="mt-1 text-sm text-slate-500">{{ state.quiz.description }}</p>
 
         <dl class="mt-5 grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -270,7 +271,7 @@ onBeforeUnmount(() => {
         data-test="completed"
       >
         <div>
-          <h1 class="text-lg font-bold text-slate-900">Kết quả: {{ state.quiz.title }}</h1>
+          <h1 class="text-lg font-bold text-slate-900">Kết quả: <MathText :text="state.quiz.title" /></h1>
           <p class="mt-1 text-sm text-slate-600">Bài làm này đã kết thúc.</p>
           <p v-if="state.result?.timedOut" class="mt-1 text-sm text-amber-800" data-test="timed-out">
             Máy chủ đã tự động nộp bài do hết thời gian làm bài.
@@ -304,14 +305,14 @@ onBeforeUnmount(() => {
 
         <ol v-if="resultRows.length > 0" class="space-y-4" data-test="result-details">
           <li v-for="row in resultRows" :key="row.id" class="rounded-xl border border-slate-200 p-4" :data-test="`result-${row.id}`">
-            <p class="text-sm font-semibold text-slate-900">Câu {{ row.number }}. {{ row.text }}</p>
+            <p class="text-sm font-semibold text-slate-900">Câu {{ row.number }}. <MathText :text="row.text" /></p>
             <template v-if="row.found">
               <p class="mt-2 text-sm" :class="row.isCorrect ? 'text-emerald-700' : 'text-red-700'" data-test="result-verdict">
                 {{ row.isCorrect ? 'Đúng' : 'Sai' }}
               </p>
-              <p class="mt-1 text-sm text-slate-700" data-test="result-selected">Bạn chọn: {{ row.selectedText ?? 'Bỏ trống' }}</p>
-              <p class="mt-1 text-sm text-slate-700" data-test="result-correct-answer">Đáp án đúng: {{ row.correctText ?? '—' }}</p>
-              <p v-if="row.explanation" class="mt-2 text-sm text-slate-600 whitespace-pre-wrap" data-test="result-explanation">{{ row.explanation }}</p>
+              <p class="mt-1 text-sm text-slate-700" data-test="result-selected">Bạn chọn: <MathText v-if="row.selectedText !== null" :text="row.selectedText" /><template v-else>Bỏ trống</template></p>
+              <p class="mt-1 text-sm text-slate-700" data-test="result-correct-answer">Đáp án đúng: <MathText v-if="row.correctText !== null" :text="row.correctText" /><template v-else>—</template></p>
+              <p v-if="row.explanation" class="mt-2 text-sm text-slate-600 whitespace-pre-wrap" data-test="result-explanation"><MathText :text="row.explanation" /></p>
               <ul v-if="row.citations.length > 0" class="mt-2 text-xs text-slate-500 list-disc pl-5" data-test="result-citations">
                 <li v-for="(citation, index) in row.citations" :key="index">
                   Nguồn: {{ citation.documentName ?? 'Tài liệu' }}<template v-if="citation.sourceLocator"> — {{ citation.sourceLocator }}</template>
@@ -348,7 +349,7 @@ onBeforeUnmount(() => {
 
         <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-6 space-y-5" data-test="attempt">
           <div class="flex items-center justify-between gap-4">
-            <h1 class="text-lg font-bold text-slate-900">{{ state.quiz.title }}</h1>
+            <h1 class="text-lg font-bold text-slate-900"><MathText :text="state.quiz.title" /></h1>
             <div class="flex items-center gap-3">
               <span
                 v-if="state.timer"
@@ -415,7 +416,7 @@ onBeforeUnmount(() => {
 
           <fieldset v-if="currentQuestion" data-test="question">
             <legend class="text-base font-semibold text-slate-900">
-              Câu {{ state.currentIndex + 1 }}. {{ currentQuestion.text }}
+              Câu {{ state.currentIndex + 1 }}. <MathText :text="currentQuestion.text" />
             </legend>
             <div class="mt-4 space-y-2">
               <label
@@ -432,7 +433,7 @@ onBeforeUnmount(() => {
                   :data-test="`option-${option.id}`"
                   @change="session.selectAnswer(currentQuestion.id, option.id)"
                 />
-                <span>{{ option.text }}</span>
+                <MathText :text="option.text" />
               </label>
             </div>
             <button
