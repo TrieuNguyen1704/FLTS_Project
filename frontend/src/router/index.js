@@ -63,6 +63,26 @@ const router = createRouter({
       component: () => import('@/views/dashboard/StudentDashboardView.vue'),
       meta: { requiresAuth: true, role: 'student' },
     },
+
+    // --- Student: khóa học và Quiz (Sprint 3) ---
+    {
+      path: '/student/courses',
+      name: 'student-courses',
+      component: () => import('@/views/student/StudentCoursesView.vue'),
+      meta: { requiresAuth: true, role: 'student' },
+    },
+    {
+      path: '/student/courses/:courseId',
+      name: 'student-course',
+      component: () => import('@/views/student/StudentCourseView.vue'),
+      meta: { requiresAuth: true, role: 'student' },
+    },
+    {
+      path: '/student/courses/:courseId/quizzes/:learningObjectId',
+      name: 'student-quiz',
+      component: () => import('@/views/student/StudentQuizPlayerView.vue'),
+      meta: { requiresAuth: true, role: 'student' },
+    },
     {
       path: '/dashboard/admin',
       name: 'admin-dashboard',
